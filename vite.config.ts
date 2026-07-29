@@ -49,9 +49,15 @@ export default defineConfig(async () => {
         buffer: "buffer/",
       },
     },
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      // Wallet extensions can race while defining window.ethereum. Their
+      // third-party injection errors should not cover the application UI with
+      // Vite's development-only full-screen overlay.
+      hmr: { overlay: false },
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+    },
     plugins: [
       vinext(),
       sites(),
