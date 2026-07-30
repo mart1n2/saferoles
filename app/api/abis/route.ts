@@ -1,20 +1,22 @@
 /**
  * Readable function names for many contracts at once.
  *
- * The permission list shows one row per function, and a types-only signature
- * there leaves a reviewer guessing which argument is the recipient. Resolving
- * each target's ABI one request at a time would be far too slow for a role with
- * dozens of targets, so this returns just what the list needs: a selector →
- * readable-signature map per address.
+ * Verified-source lookup is public. If an authenticated user is present, their
+ * tenant-owned manual ABI is preferred without exposing it to another tenant.
  */
-import { getAddress, isAddress } from "ethers";
+import { getAddress } from "ethers";
+import { getPersistenceActor } from "../../chatgpt-auth";
 import { resolveAbi } from "../../lib/abi-source";
 import { readStoredAbi, writeStoredAbi } from "../../lib/abi-store";
-import { jsonResponse } from "../../lib/serialize";
+import {
+  InputError,
+  MAX_ABI_BODY_BYTES,
+  jsonResponse,
+  parseAbiBatchPayload,
+  parseJsonRequest,
+} from "../../lib/serialize";
 
-/** Bounded so one request cannot fan out indefinitely against the ABI sources. */
 const MAX_ADDRESSES = 60;
-/** Kept low to stay well within the ABI sources' tolerance. */
 const CONCURRENCY = 6;
 
 export type FunctionNames = Record<string, Record<string, string>>;
@@ -30,43 +32,70 @@ async function inBatches<T>(
 }
 
 export async function POST(request: Request): Promise<Response> {
-  let body: { chainId?: number; addresses?: string[] };
+  let body: ReturnType<typeof parseAbiBatchPayload>;
   try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ error: "Expected a JSON body." }, { status: 400 });
+    body = parseAbiBatchPayload(
+      await parseJsonRequest(request, MAX_ABI_BODY_BYTES),
+    );
+  } catch (error) {
+    if (error instanceof InputError) {
+      return jsonResponse({ error: error.message }, { status: error.status });
+    }
+    return jsonResponse({ error: "ABI lookup request failed." }, { status: 400 });
   }
 
-  const chainId = body.chainId;
-  if (!Number.isInteger(chainId)) {
-    return jsonResponse({ error: "Provide a chainId." }, { status: 400 });
-  }
-
+  const actor = await getPersistenceActor();
   const unique = [
-    ...new Set(
-      (body.addresses ?? [])
-        .filter((address) => isAddress(address))
-        .map((address) => getAddress(address)),
-    ),
+    ...new Set(body.addresses.map((address) => getAddress(address))),
   ];
   if (unique.length === 0) {
-    return jsonResponse({ functions: {}, truncated: false });
+    return jsonResponse({ functions: {}, truncated: false, requested: 0 });
   }
 
   const requested = unique.slice(0, MAX_ADDRESSES);
   const functions: FunctionNames = {};
+  let cacheWarnings = 0;
 
   await inBatches(requested, CONCURRENCY, async (address) => {
     try {
-      // A stored copy is the common case after the first visit.
-      let resolved = await readStoredAbi(chainId as number, address);
+      let resolved = null;
+      try {
+        resolved = await readStoredAbi(
+          body.chainId,
+          address,
+          actor?.tenantId,
+        );
+      } catch {
+        cacheWarnings += 1;
+      }
       if (!resolved) {
         resolved = await resolveAbi(
-          chainId as number,
+          body.chainId,
           address,
           AbortSignal.timeout(10_000),
         );
-        if (resolved) await writeStoredAbi(resolved);
+        if (resolved) {
+          // Prefer a manual ABI created while the live lookup was in flight.
+          if (actor) {
+            try {
+              const latest = await readStoredAbi(
+                body.chainId,
+                address,
+                actor.tenantId,
+              );
+              if (latest?.source === "manual") resolved = latest;
+            } catch {
+              cacheWarnings += 1;
+            }
+          }
+          if (resolved.source !== "manual") {
+            try {
+              await writeStoredAbi(resolved);
+            } catch {
+              cacheWarnings += 1;
+            }
+          }
+        }
       }
       if (!resolved) return;
 
@@ -82,8 +111,8 @@ export async function POST(request: Request): Promise<Response> {
 
   return jsonResponse({
     functions,
-    // Reported rather than hidden: a silently truncated list would look complete.
     truncated: unique.length > requested.length,
     requested: requested.length,
+    ...(cacheWarnings > 0 ? { cacheWarnings } : {}),
   });
 }

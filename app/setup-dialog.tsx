@@ -9,11 +9,15 @@
  * against the chain and the published source before a batch can be built, and the
  * consequence is stated plainly rather than buried.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isAddress } from "ethers";
 import { shortHex } from "./lib/abi";
 import { chainName } from "./lib/chains";
 import type { ResolvedAbi } from "./lib/abi-source";
+import {
+  submissionReferences,
+  type SubmissionResult,
+} from "./lib/submission";
 import {
   MODULE_PROXY_FACTORY,
   SUGGESTED_ROLES_MASTERCOPY,
@@ -28,8 +32,15 @@ import {
 export type SetupSubmitter = {
   /** Human-readable name of the route the batch will take. */
   label: string;
-  submit: (transactions: { to: string; value: string; data: string }[]) => Promise<string>;
+  submit: (
+    transactions: { to: string; value: string; data: string }[],
+  ) => Promise<SubmissionResult>;
   getCode: (address: string) => Promise<string | null>;
+  chainId: number;
+  /** Setup must be deploy+enable as one indivisible Safe operation. */
+  atomic: boolean;
+  /** The submitting address was positively identified as a Safe contract. */
+  safeVerified: boolean;
 };
 
 export function SetupDialog({
@@ -46,7 +57,7 @@ export function SetupDialog({
   onClose: () => void;
   onDone: (modifierAddress: string) => void;
 }) {
-  const [mastercopy, setMastercopy] = useState(SUGGESTED_ROLES_MASTERCOPY);
+  const [mastercopy] = useState(SUGGESTED_ROLES_MASTERCOPY);
   const [saltNonce, setSaltNonce] = useState(() => freshSaltNonce());
   const [factoryCode, setFactoryCode] = useState<string | null>(null);
 
@@ -62,7 +73,8 @@ export function SetupDialog({
   );
   const [state, setState] = useState<"idle" | "submitting" | "done" | "error">("idle");
   const [message, setMessage] = useState<string | null>(null);
-  const [reference, setReference] = useState<string | null>(null);
+  const [submission, setSubmission] = useState<SubmissionResult | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
 
   // The plan is derived, so the address shown is always the address that the
   // encoded batch will actually create.
@@ -90,7 +102,12 @@ export function SetupDialog({
     const timer = setTimeout(() => {
       void (async () => {
         const result = await readCode(mastercopy);
-        if (!cancelled) setCodeFor({ address: mastercopy, code: result ?? "0x" });
+        if (!cancelled) {
+          setCodeFor({
+            address: mastercopy,
+            code: result ?? "read-unavailable",
+          });
+        }
       })();
     }, 300);
     return () => {
@@ -105,7 +122,7 @@ export function SetupDialog({
     const timer = setTimeout(() => {
       void (async () => {
         const result = await readCode(MODULE_PROXY_FACTORY);
-        if (!cancelled) setFactoryCode(result ?? "0x");
+        if (!cancelled) setFactoryCode(result ?? "read-unavailable");
       })();
     }, 0);
     return () => {
@@ -121,7 +138,12 @@ export function SetupDialog({
     const timer = setTimeout(() => {
       void (async () => {
         const result = await readCode(target);
-        if (!cancelled) setPredictedFor({ address: target, code: result ?? "0x" });
+        if (!cancelled) {
+          setPredictedFor({
+            address: target,
+            code: result ?? "read-unavailable",
+          });
+        }
       })();
     }, 300);
     return () => {
@@ -140,7 +162,12 @@ export function SetupDialog({
         try {
           const response = await fetch(`/api/abi?chainId=${chainId}&address=${mastercopy}`);
           const body = (await response.json()) as { abi?: ResolvedAbi | null };
-          if (!cancelled) setAbiFor({ address: mastercopy, abi: body.abi ?? null });
+          if (!cancelled) {
+            setAbiFor({
+              address: mastercopy,
+              abi: response.ok ? (body.abi ?? null) : null,
+            });
+          }
         } catch {
           if (!cancelled) setAbiFor({ address: mastercopy, abi: null });
         }
@@ -163,21 +190,29 @@ export function SetupDialog({
         abiName: abi === undefined ? null : (abi?.name ?? null),
         abiFunctions:
           abi === undefined ? null : (abi?.functions.map((entry) => entry.name) ?? []),
+        abiSource: abi === undefined ? null : (abi?.source ?? null),
         factoryCode: readCode ? factoryCode : undefined,
         predictedCode: readCode ? predictedCode : undefined,
       }),
     [abi, code, factoryCode, mastercopy, predictedCode, readCode],
   );
 
-  const ready = Boolean(plan && submitter && checksPass(checks));
+  const ready = Boolean(
+    plan &&
+      submitter &&
+      submitter.chainId === chainId &&
+      submitter.atomic &&
+      submitter.safeVerified &&
+      checksPass(checks),
+  );
 
   const submit = useCallback(async () => {
     if (!plan || !submitter) return;
     setState("submitting");
     setMessage(null);
     try {
-      const id = await submitter.submit(plan.transactions);
-      setReference(id);
+      const result = await submitter.submit(plan.transactions);
+      setSubmission(result);
       setState("done");
       onDone(plan.predictedAddress);
     } catch (error) {
@@ -186,13 +221,27 @@ export function SetupDialog({
     }
   }, [onDone, plan, submitter]);
 
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && state !== "submitting") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose, state]);
+
   return (
     <div className="modal-backdrop" role="presentation">
       <section
+        ref={dialogRef}
         className="modal review-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby="setup-title"
+        tabIndex={-1}
       >
         <div className="modal-heading">
           <div>
@@ -203,7 +252,12 @@ export function SetupDialog({
               {chainName(chainId)} and enables it as a Safe module, in one batch.
             </p>
           </div>
-          <button className="icon-button" aria-label="Close" onClick={onClose}>
+          <button
+            className="icon-button"
+            aria-label="Close"
+            onClick={onClose}
+            disabled={state === "submitting"}
+          >
             ×
           </button>
         </div>
@@ -223,13 +277,12 @@ export function SetupDialog({
           <input
             className="mono-input"
             value={mastercopy}
-            onChange={(event) => setMastercopy(event.target.value.trim())}
+            readOnly
             placeholder="0x…"
           />
           <small>
-            Pre-filled with the address Zodiac deploys Roles v2 to on every supported
-            chain. It is a suggestion, not an assertion — it is verified below like any
-            other value. Replace it if you are deploying from a different mastercopy.
+            Setup is pinned to the approved Roles implementation. Its exact deployed
+            runtime and the factory runtime are verified below before submission.
           </small>
         </label>
 
@@ -260,6 +313,34 @@ export function SetupDialog({
             </div>
           )}
         </div>
+
+        {submitter && submitter.chainId !== chainId && (
+          <div className="validation-issues" role="alert">
+            <b>Wrong network</b>
+            <p>
+              The submitter is on {chainName(submitter.chainId)}, while this setup
+              targets {chainName(chainId)}.
+            </p>
+          </div>
+        )}
+
+        {submitter && !submitter.safeVerified && (
+          <div className="validation-issues" role="alert">
+            <b>Submitting account is not a verified Safe</b>
+            <p>Select the Safe contract account, not an owner EOA.</p>
+          </div>
+        )}
+
+        {submitter && !submitter.atomic && (
+          <div className="guardrail-callout critical" role="alert">
+            <b>Atomic setup is required</b>
+            <p>
+              Deploying and enabling must be submitted as one Safe batch. A
+              sequential wallet could stop after deployment and leave setup in an
+              ambiguous partial state, so this path is blocked.
+            </p>
+          </div>
+        )}
 
         {plan && (
           <>
@@ -320,8 +401,13 @@ export function SetupDialog({
                   className="mono-input"
                   value={saltNonce}
                   onChange={(event) => setSaltNonce(event.target.value.replace(/\D/g, ""))}
+                  disabled={state === "submitting"}
                 />
-                <button className="button secondary" onClick={() => setSaltNonce(freshSaltNonce())}>
+                <button
+                  className="button secondary"
+                  onClick={() => setSaltNonce(freshSaltNonce())}
+                  disabled={state === "submitting"}
+                >
                   New salt
                 </button>
               </div>
@@ -333,12 +419,14 @@ export function SetupDialog({
           </>
         )}
 
-        {state === "done" && reference && (
+        {state === "done" && submission && (
           <div className="proposal-success">
             <span>✓</span>
             <p>
               <b>Submitted via {submitter?.label}</b>
-              <code>{shortHex(reference, 14, 12)}</code>
+              {submissionReferences(submission).map((reference) => (
+                <code key={reference}>{shortHex(reference, 14, 12)}</code>
+              ))}
             </p>
             <small>
               Once executed, the modifier will be live at {plan?.predictedAddress}. It has
@@ -355,7 +443,9 @@ export function SetupDialog({
         )}
 
         <div className="modal-actions">
-          <button onClick={onClose}>{state === "done" ? "Close" : "Cancel"}</button>
+          <button onClick={onClose} disabled={state === "submitting"}>
+            {state === "done" ? "Close" : "Cancel"}
+          </button>
           <button
             className="button primary"
             onClick={() => void submit()}

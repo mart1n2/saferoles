@@ -483,6 +483,44 @@ test("editing an allowance period preserves spent balance and refill window", ()
   );
 });
 
+test("a balance-only allowance top-up emits setAllowance", () => {
+  const current = {
+    roles: [] as SdkRole[],
+    allowances: [
+      {
+        key: encodeKey("daily_usdc"),
+        balance: 10n,
+        maxRefill: 100n,
+        refill: 25n,
+        period: 86_400n,
+        timestamp: 1_700_000_000n,
+      },
+    ],
+  };
+  const result = plan(
+    policy(
+      [],
+      [
+        allowance({
+          balance: "20",
+          maxRefill: "100",
+          refill: "25",
+          period: "86400",
+          timestamp: "1700000000",
+        }),
+      ],
+    ),
+    current,
+  );
+
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(names(result.transactions), ["setAllowance"]);
+  const encoded = iface.parseTransaction({ data: result.transactions[0].data })!;
+  assert.equal(encoded.args.balance, 20n);
+  assert.equal(result.changes[0].risk, "Medium");
+  assert.match(result.changes[0].rationale ?? "", /Raises the amount/);
+});
+
 test("a display label never changes the calldata a permission encodes", () => {
   // signatureLabel exists so a list of permissions reads well. If it could reach
   // encoding, renaming a parameter would silently change which function is

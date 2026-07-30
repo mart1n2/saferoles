@@ -1,5 +1,5 @@
 /**
- * Reads the live policy of one Roles modifier.
+ * Reads the indexer's policy snapshot for one Roles modifier.
  *
  * Proxied through the Worker rather than called from the browser so the app
  * works inside the Safe App iframe without depending on the indexer's CORS
@@ -14,6 +14,7 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const address = url.searchParams.get("address") ?? "";
   const chainId = Number(url.searchParams.get("chainId"));
+  const fresh = url.searchParams.has("fresh");
 
   if (!isAddress(address)) {
     return jsonResponse(
@@ -31,16 +32,40 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
-    const mod = await fetchRolesMod({
-      chainId,
-      address: getAddress(address).toLowerCase() as `0x${string}`,
-    });
+    const requestedAddress = getAddress(address).toLowerCase() as `0x${string}`;
+    const mod = await fetchRolesMod(
+      {
+        chainId,
+        address: requestedAddress,
+      },
+      fresh
+        ? {
+            cache: "no-store",
+            headers: {
+              "cache-control": "no-cache, no-store, max-age=0",
+              pragma: "no-cache",
+            },
+          }
+        : undefined,
+    );
     if (!mod) {
       return jsonResponse(
         {
           error: `No Roles modifier is indexed at ${address} on ${chainName(chainId)}.`,
         },
         { status: 404 },
+      );
+    }
+    if (
+      !isAddress(mod.address) ||
+      mod.address.toLowerCase() !== requestedAddress
+    ) {
+      return jsonResponse(
+        {
+          error:
+            "The Roles indexer returned a modifier that does not match the requested address.",
+        },
+        { status: 502 },
       );
     }
     return jsonResponse({ mod });

@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * Policy state: load live configuration, edit a draft of it, and continuously
+ * Policy state: load the indexer's configuration snapshot, edit a draft of it,
+ * and continuously
  * plan the difference.
  *
  * The plan is derived from (fetched chain state, current draft) on every edit,
@@ -17,6 +18,15 @@ import { revive } from "./serialize";
 
 export type Scope = { chainId: number; rolesMod: string };
 
+export function samePolicyScope(a: Scope | null, b: Scope | null): boolean {
+  return Boolean(
+    a &&
+      b &&
+      a.chainId === b.chainId &&
+      a.rolesMod.toLowerCase() === b.rolesMod.toLowerCase(),
+  );
+}
+
 export type LoadStatus = "idle" | "loading" | "loaded" | "error";
 
 export type ChainFacts = {
@@ -25,6 +35,15 @@ export type ChainFacts = {
   /** The modifier's execution target, normally the Safe itself. */
   target: string;
 };
+
+export type BaselineCheck =
+  | { fresh: true; baseHash: string }
+  | {
+      fresh: false;
+      reason: "changed" | "indexer-pending";
+      previousHash: string;
+      currentHash: string;
+    };
 
 async function readJson<T>(response: Response): Promise<T> {
   const text = await response.text();
@@ -42,9 +61,23 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
+function assertModifierAddress(mod: RolesModifier, expected: string): void {
+  if (
+    !mod.address ||
+    mod.address.toLowerCase() !== expected.toLowerCase()
+  ) {
+    throw new Error(
+      `The policy source returned ${mod.address || "an unknown modifier"} instead of ${expected}.`,
+    );
+  }
+}
+
 /** Stable fingerprint of the chain state a draft was based on. */
-async function fingerprint(state: SdkState): Promise<string> {
-  const canonical = JSON.stringify(state, (_key, value) =>
+export async function fingerprint(
+  state: SdkState,
+  facts?: ChainFacts,
+): Promise<string> {
+  const canonical = JSON.stringify({ state, facts }, (_key, value) =>
     typeof value === "bigint" ? value.toString() : value,
   );
   const digest = await crypto.subtle.digest(
@@ -61,7 +94,7 @@ export type PolicyState = {
   error: string | null;
   scope: Scope | null;
   facts: ChainFacts | null;
-  /** Live on-chain state, the only valid baseline for a diff. */
+  /** Indexed policy snapshot used as the baseline for a diff. */
   current: SdkState | null;
   baseHash: string | null;
   draft: DraftPolicy | null;
@@ -72,6 +105,14 @@ export type PolicyState = {
   setDraft: (update: (draft: DraftPolicy) => DraftPolicy) => void;
   discard: () => void;
   applyDraft: (policy: DraftPolicy) => void;
+  /**
+   * Re-fetches the indexed state immediately before submission. A changed
+   * baseline is installed so React rebuilds the review plan, but never submitted
+   * in the same click.
+   */
+  recheckBaseline: () => Promise<BaselineCheck>;
+  /** Prevents another proposal until the indexer observes the submitted state. */
+  markSubmitted: () => void;
 };
 
 const idlePlan: Plan = {
@@ -95,9 +136,13 @@ export function usePolicy(): PolicyState {
   // Guards against a slow response for a scope the user has moved away from
   // overwriting the policy they are now looking at.
   const loadToken = useRef(0);
+  const scopeRef = useRef<Scope | null>(null);
+  const submittedBaseHash = useRef<string | null>(null);
 
   const load = useCallback(async (next: Scope) => {
     const token = ++loadToken.current;
+    if (!samePolicyScope(scopeRef.current, next)) submittedBaseHash.current = null;
+    scopeRef.current = next;
     setStatus("loading");
     setError(null);
     setScope(next);
@@ -107,13 +152,25 @@ export function usePolicy(): PolicyState {
         `/api/rolesmod?chainId=${next.chainId}&address=${next.rolesMod}`,
       );
       if (token !== loadToken.current) return;
+      assertModifierAddress(mod, next.rolesMod);
 
       const chainState: SdkState = { roles: mod.roles, allowances: mod.allowances };
       const imported = fromRolesMod(mod, next.chainId);
-      const hash = await fingerprint(chainState);
+      const nextFacts = {
+        owner: mod.owner,
+        avatar: mod.avatar,
+        target: mod.target,
+      };
+      const hash = await fingerprint(chainState, nextFacts);
       if (token !== loadToken.current) return;
+      if (
+        submittedBaseHash.current &&
+        hash !== submittedBaseHash.current
+      ) {
+        submittedBaseHash.current = null;
+      }
 
-      setFacts({ owner: mod.owner, avatar: mod.avatar, target: mod.target });
+      setFacts(nextFacts);
       setCurrent(chainState);
       setBaseHash(hash);
       setDraft(imported);
@@ -142,8 +199,80 @@ export function usePolicy(): PolicyState {
   }, [pristine]);
 
   const applyDraft = useCallback((policy: DraftPolicy) => {
+    const active = scopeRef.current;
+    if (
+      !active ||
+      policy.chainId !== active.chainId ||
+      policy.rolesMod.toLowerCase() !== active.rolesMod.toLowerCase()
+    ) {
+      throw new Error(
+        "This draft belongs to a different chain or Roles modifier and cannot be opened here.",
+      );
+    }
     setDraft(policy);
   }, []);
+
+  const recheckBaseline = useCallback(async (): Promise<BaselineCheck> => {
+    const active = scopeRef.current;
+    if (!active || !current || !baseHash) {
+      throw new Error("The indexed policy baseline is not loaded.");
+    }
+
+    // The nonce and no-store mode avoid browser/CDN reuse. This endpoint is
+    // indexer-backed, so after a submission we additionally require the
+    // fingerprint to advance before accepting another proposal.
+    const { mod } = await request<{ mod: RolesModifier }>(
+      `/api/rolesmod?chainId=${active.chainId}&address=${active.rolesMod}&fresh=${Date.now()}`,
+      { cache: "no-store", headers: { "cache-control": "no-cache" } },
+    );
+    assertModifierAddress(mod, active.rolesMod);
+    if (!samePolicyScope(scopeRef.current, active)) {
+      throw new Error("The open modifier changed while its baseline was checked.");
+    }
+
+    const chainState: SdkState = {
+      roles: mod.roles,
+      allowances: mod.allowances,
+    };
+    const nextFacts = {
+      owner: mod.owner,
+      avatar: mod.avatar,
+      target: mod.target,
+    };
+    const hash = await fingerprint(chainState, nextFacts);
+    if (!samePolicyScope(scopeRef.current, active)) {
+      throw new Error("The open modifier changed while its baseline was checked.");
+    }
+
+    if (submittedBaseHash.current === hash) {
+      return {
+        fresh: false,
+        reason: "indexer-pending",
+        previousHash: baseHash,
+        currentHash: hash,
+      };
+    }
+    if (hash !== baseHash) {
+      const imported = fromRolesMod(mod, active.chainId);
+      setFacts(nextFacts);
+      setCurrent(chainState);
+      setBaseHash(hash);
+      setPristine(JSON.stringify(imported));
+      setStatus("loaded");
+      submittedBaseHash.current = null;
+      return {
+        fresh: false,
+        reason: "changed",
+        previousHash: baseHash,
+        currentHash: hash,
+      };
+    }
+    return { fresh: true, baseHash: hash };
+  }, [baseHash, current]);
+
+  const markSubmitted = useCallback(() => {
+    submittedBaseHash.current = baseHash;
+  }, [baseHash]);
 
   const plan = useMemo<Plan>(() => {
     if (!draft || !current || !scope) return idlePlan;
@@ -176,6 +305,8 @@ export function usePolicy(): PolicyState {
     setDraft: update,
     discard,
     applyDraft,
+    recheckBaseline,
+    markSubmitted,
   };
 }
 

@@ -1,86 +1,65 @@
-import { isAddress } from "ethers";
-import type { Call } from "zodiac-roles-sdk";
+import { getPersistenceActor } from "../../chatgpt-auth";
 import { DatabaseUnavailableError } from "../../lib/db-binding";
-import { listProposals, recordProposal } from "../../lib/drafts";
-import { jsonResponse } from "../../lib/serialize";
+import {
+  ProposalConflictError,
+  listProposals,
+  recordProposal,
+} from "../../lib/drafts";
+import {
+  InputError,
+  MAX_PROPOSAL_BODY_BYTES,
+  jsonResponse,
+  parseDraftScope,
+  parseJsonRequest,
+  parseProposalPayload,
+} from "../../lib/serialize";
 
 export async function GET(request: Request): Promise<Response> {
-  const url = new URL(request.url);
-  const chainId = Number(url.searchParams.get("chainId"));
-  const rolesMod = url.searchParams.get("rolesMod") ?? "";
-
-  if (!Number.isInteger(chainId) || !isAddress(rolesMod)) {
-    return jsonResponse(
-      { error: "Provide a chainId and a complete Roles modifier address." },
-      { status: 400 },
-    );
-  }
+  const actor = await getPersistenceActor();
+  if (!actor) return unauthorized();
 
   try {
-    return jsonResponse({ proposals: await listProposals(chainId, rolesMod) });
+    const scope = parseDraftScope(new URL(request.url));
+    return jsonResponse(
+      await listProposals(actor, scope.chainId, scope.rolesMod),
+    );
   } catch (error) {
     return handle(error);
   }
 }
 
-/** Records a proposal that has already been submitted to the Safe. */
+/** Records a typed submission reference after the wallet or Safe accepted it. */
 export async function POST(request: Request): Promise<Response> {
-  let body: {
-    draftId?: string | null;
-    chainId?: number;
-    rolesMod?: string;
-    safeAddress?: string;
-    safeTxHash?: string;
-    risk?: string;
-    calls?: Call[];
-    proposedBy?: string | null;
-  };
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ error: "Expected a JSON body." }, { status: 400 });
-  }
+  const actor = await getPersistenceActor();
+  if (!actor) return unauthorized();
 
-  if (
-    !Number.isInteger(body.chainId) ||
-    !isAddress(body.rolesMod ?? "") ||
-    !isAddress(body.safeAddress ?? "") ||
-    !body.safeTxHash ||
-    !Array.isArray(body.calls)
-  ) {
-    return jsonResponse(
-      { error: "A proposal record needs its scope, Safe transaction hash and calls." },
-      { status: 400 },
+  try {
+    const body = parseProposalPayload(
+      await parseJsonRequest(request, MAX_PROPOSAL_BODY_BYTES),
     );
-  }
-
-  try {
-    await recordProposal({
-      draftId: body.draftId ?? null,
-      chainId: body.chainId as number,
-      rolesMod: body.rolesMod as string,
-      safeAddress: body.safeAddress as string,
-      safeTxHash: body.safeTxHash,
-      risk: body.risk ?? "Low",
-      calls: body.calls,
-      proposedBy: body.proposedBy ?? null,
-    });
-    return jsonResponse({ recorded: true }, { status: 201 });
+    const result = await recordProposal(actor, body);
+    return jsonResponse(
+      { recorded: true, created: result.created },
+      { status: result.created ? 201 : 200 },
+    );
   } catch (error) {
     return handle(error);
   }
+}
+
+function unauthorized(): Response {
+  return jsonResponse({ error: "Authentication is required." }, { status: 401 });
 }
 
 function handle(error: unknown): Response {
+  if (error instanceof InputError) {
+    return jsonResponse({ error: error.message }, { status: error.status });
+  }
+  if (error instanceof ProposalConflictError) {
+    return jsonResponse({ error: error.message }, { status: 409 });
+  }
   if (error instanceof DatabaseUnavailableError) {
     return jsonResponse({ error: error.message }, { status: 503 });
   }
-  return jsonResponse(
-    {
-      error: `Proposal storage failed: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`,
-    },
-    { status: 500 },
-  );
+  return jsonResponse({ error: "Proposal storage failed." }, { status: 500 });
 }

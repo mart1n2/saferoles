@@ -7,10 +7,10 @@ const eslintConfig = defineConfig([
   ...nextTs,
   // Override default ignores of eslint-config-next.
   globalIgnores([
-    // Default ignores of eslint-config-next:
+    // Generated output only. `build/` contains the checked-in Sites packaging
+    // plugin, so it must remain inside the lint surface.
     ".next/**",
     "out/**",
-    "build/**",
     "next-env.d.ts",
   ]),
 ]);

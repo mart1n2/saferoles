@@ -16,18 +16,22 @@
  * Zodiac ModuleProxyFactory, then enable the resulting address as a module.
  */
 import { encodeDeployProxy, predictProxyAddress } from "@gnosis-guild/zodiac-core";
-import { Interface, getAddress, isAddress } from "ethers";
+import { Interface, getAddress, isAddress, keccak256 } from "ethers";
 
 /**
- * Roles v2 mastercopy, deployed at this address on every chain Zodiac has
- * deterministically deployed to (confirmed on Ethereum, Gnosis, Base, Arbitrum
- * and Optimism, verified on Sourcify as `Roles`).
+ * Official Roles mastercopy pinned by address and runtime bytecode identity.
  *
- * Treated strictly as a *suggestion*: it is pre-filled for convenience and then
- * verified at runtime like any other value. Never trusted on the basis of being
- * hardcoded here.
+ * Enabling an arbitrary module is equivalent to granting it control of the
+ * Safe, so setup intentionally does not accept a user-selected implementation.
  */
-export const SUGGESTED_ROLES_MASTERCOPY = "0x9646fDAD06d3e24444381f44362a3B0eB343D337";
+export const APPROVED_ROLES_MASTERCOPY =
+  "0xF2964CE6161ce0e75964Fe7927cE114cb0B283D5";
+/** Compatibility name retained for callers; this is approved, not suggested. */
+export const SUGGESTED_ROLES_MASTERCOPY = APPROVED_ROLES_MASTERCOPY;
+export const EXPECTED_ROLES_RUNTIME_CODE_HASH =
+  "0x471d8b3b419f1eb955230c0326c8812176df49bf3c7b414a563fda5a3c6c10b6";
+export const EXPECTED_FACTORY_RUNTIME_CODE_HASH =
+  "0x01623cbcf010a1c326230f1b2d5f48a66b440232ee49096102bc84967dc5f21e";
 
 /** Functions a contract must expose to be a Roles v2 modifier. */
 export const REQUIRED_ROLES_FUNCTIONS = [
@@ -99,6 +103,11 @@ export function buildSetupPlan({
   if (!isAddress(mastercopy)) {
     throw new Error("Enter a complete Roles mastercopy address.");
   }
+  if (getAddress(mastercopy) !== APPROVED_ROLES_MASTERCOPY) {
+    throw new Error(
+      `Setup only supports the approved Roles mastercopy at ${APPROVED_ROLES_MASTERCOPY}.`,
+    );
+  }
 
   const safe = getAddress(safeAddress);
   const setupArgs = {
@@ -158,6 +167,19 @@ export type SetupCheck = {
   detail: string;
 };
 
+/** Returns null for anything that is not non-empty EVM bytecode. */
+export function runtimeCodeHash(code: string | null | undefined): string | null {
+  if (
+    typeof code !== "string" ||
+    code.length <= 2 ||
+    code.length % 2 !== 0 ||
+    !/^0x[0-9a-fA-F]+$/.test(code)
+  ) {
+    return null;
+  }
+  return keccak256(code);
+}
+
 /**
  * Evaluates whether a mastercopy is safe to deploy from.
  *
@@ -171,6 +193,7 @@ export function evaluateMastercopy({
   code,
   abiName,
   abiFunctions,
+  abiSource,
   factoryCode,
   predictedCode,
 }: {
@@ -178,6 +201,8 @@ export function evaluateMastercopy({
   code: string | null;
   abiName: string | null;
   abiFunctions: readonly string[] | null;
+  /** Manual ABI input is never acceptable evidence for module identity. */
+  abiSource?: "sourcify" | "etherscan" | "manual" | null;
   /** Bytecode at {@link MODULE_PROXY_FACTORY} on the target chain. */
   factoryCode?: string | null;
   /** Bytecode at the predicted proxy address, which must be empty. */
@@ -199,11 +224,17 @@ export function evaluateMastercopy({
 
   checks.push({
     id: "address",
-    label: "Address is well formed",
-    status: isAddress(mastercopy) ? "pass" : "fail",
-    detail: isAddress(mastercopy)
-      ? getAddress(mastercopy)
-      : "Enter a complete 20-byte address.",
+    label: "Approved Roles mastercopy address",
+    status:
+      isAddress(mastercopy) &&
+      getAddress(mastercopy) === APPROVED_ROLES_MASTERCOPY
+        ? "pass"
+        : "fail",
+    detail:
+      isAddress(mastercopy) &&
+      getAddress(mastercopy) === APPROVED_ROLES_MASTERCOPY
+        ? APPROVED_ROLES_MASTERCOPY
+        : `Setup is pinned to ${APPROVED_ROLES_MASTERCOPY}.`,
   });
 
   if (code === null) {
@@ -225,6 +256,28 @@ export function evaluateMastercopy({
     });
   }
 
+  if (code === null) {
+    checks.push({
+      id: "runtime",
+      label: "Roles runtime bytecode matches",
+      status: "pending",
+      detail: "Hashing the deployed runtime…",
+    });
+  } else {
+    const hash = runtimeCodeHash(code);
+    const matches = hash === EXPECTED_ROLES_RUNTIME_CODE_HASH;
+    checks.push({
+      id: "runtime",
+      label: "Roles runtime bytecode matches",
+      status: matches ? "pass" : "fail",
+      detail: matches
+        ? EXPECTED_ROLES_RUNTIME_CODE_HASH
+        : hash
+          ? `Unexpected runtime hash ${hash}.`
+          : "The deployed runtime could not be hashed.",
+    });
+  }
+
   if (abiFunctions === null) {
     checks.push({
       id: "verified",
@@ -233,18 +286,21 @@ export function evaluateMastercopy({
       detail: "Checking the published source…",
     });
   } else {
+    const trustedSource = abiSource === "sourcify" || abiSource === "etherscan";
     const namedRoles = (abiName ?? "").toLowerCase().includes("roles");
     const missing = REQUIRED_ROLES_FUNCTIONS.filter(
       (required) => !abiFunctions.includes(required),
     );
-    const ok = namedRoles && missing.length === 0;
+    const ok = trustedSource && namedRoles && missing.length === 0;
     checks.push({
       id: "verified",
       label: "Source is published and identifies as Roles",
       status: ok ? "pass" : "fail",
       detail: ok
-        ? `Verified as ${abiName}, with the full Roles v2 interface`
-        : !abiName
+        ? `Verified by ${abiSource} as ${abiName}, with the full Roles v2 interface`
+        : abiSource === "manual"
+          ? "A manually supplied ABI is not independent identity evidence."
+          : !abiName
           ? "No published source was found for this address, so it cannot be identified."
           : missing.length > 0
             ? `Verified as ${abiName}, but missing: ${missing.join(", ")}`
@@ -262,13 +318,18 @@ export function evaluateMastercopy({
       });
     } else {
       const present = deployedAt(factoryCode);
+      const hash = runtimeCodeHash(factoryCode);
+      const matches = hash === EXPECTED_FACTORY_RUNTIME_CODE_HASH;
       checks.push({
         id: "factory",
-        label: "Zodiac module factory is available",
-        status: present ? "pass" : "fail",
-        detail: present
-          ? MODULE_PROXY_FACTORY
-          : `The factory is not deployed at ${MODULE_PROXY_FACTORY} on this chain, so a proxy cannot be created.`,
+        label: "Zodiac module factory identity matches",
+        status: present && matches ? "pass" : "fail",
+        detail:
+          present && matches
+            ? `${MODULE_PROXY_FACTORY} · ${EXPECTED_FACTORY_RUNTIME_CODE_HASH}`
+            : !present
+              ? `The factory is not deployed at ${MODULE_PROXY_FACTORY} on this chain, so a proxy cannot be created.`
+              : `Unexpected factory runtime hash ${hash ?? "unavailable"}.`,
       });
     }
   }

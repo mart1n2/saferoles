@@ -159,7 +159,7 @@ function keyLabel(key: `0x${string}`): string {
 
 function describeCall(
   call: Call,
-  previousAllowances: Map<string, bigint>,
+  previousAllowances: Map<string, SdkState["allowances"][number]>,
 ): Omit<PlannedChange, "id" | "call"> {
   switch (call.call) {
     case "allowTarget":
@@ -249,7 +249,19 @@ function describeCall(
 
     case "setAllowance": {
       const previous = previousAllowances.get(call.key.toLowerCase());
-      const raising = previous === undefined || call.maxRefill > previous;
+      const fasterRefill =
+        previous !== undefined &&
+        call.refill > 0n &&
+        (previous.period === 0n ||
+          call.period === 0n ||
+          (call.period > 0n && call.period < previous.period));
+      const raising =
+        previous === undefined ||
+        call.balance > previous.balance ||
+        call.maxRefill > previous.maxRefill ||
+        call.refill > previous.refill ||
+        fasterRefill ||
+        (previous !== undefined && call.timestamp !== previous.timestamp);
       const label = keyLabel(call.key);
       const period =
         call.period === 0n
@@ -261,7 +273,7 @@ function describeCall(
         summary:
           previous === undefined
             ? `Create allowance "${label}" with a ceiling of ${call.maxRefill}`
-            : `Set allowance "${label}" ceiling to ${call.maxRefill} (was ${previous})`,
+            : `Set allowance "${label}" ceiling to ${call.maxRefill} (was ${previous.maxRefill})`,
         detail: `available now ${call.balance} · ${period}`,
         risk: raising ? "Medium" : "Low",
         rationale: raising
@@ -279,6 +291,20 @@ function describeCall(
         risk: "Low",
       };
   }
+}
+
+function sameAllowance(
+  left: SdkState["allowances"][number],
+  right: SdkState["allowances"][number],
+): boolean {
+  return (
+    left.key.toLowerCase() === right.key.toLowerCase() &&
+    left.balance === right.balance &&
+    left.maxRefill === right.maxRefill &&
+    left.refill === right.refill &&
+    left.period === right.period &&
+    left.timestamp === right.timestamp
+  );
 }
 
 /**
@@ -328,10 +354,41 @@ export function buildPlan({
     };
   }
 
+  // The SDK planner currently ignores balance- and timestamp-only allowance
+  // changes. Those fields are calldata-bearing state: silently dropping a
+  // top-up would show a Budget edit while submitting no call. Fill any missing
+  // allowance diff explicitly, while avoiding duplicates when the SDK already
+  // emitted `setAllowance` for another changed field.
+  const currentAllowances = new Map(
+    current.allowances.map((allowance) => [
+      allowance.key.toLowerCase(),
+      allowance,
+    ]),
+  );
+  const plannedAllowanceKeys = new Set(
+    calls
+      .filter(
+        (call): call is Extract<Call, { call: "setAllowance" }> =>
+          call.call === "setAllowance",
+      )
+      .map((call) => call.key.toLowerCase()),
+  );
+  for (const allowance of desired.allowances) {
+    const key = allowance.key.toLowerCase();
+    const previous = currentAllowances.get(key);
+    if (
+      !plannedAllowanceKeys.has(key) &&
+      (!previous || !sameAllowance(previous, allowance))
+    ) {
+      calls.push({ call: "setAllowance", ...allowance });
+      plannedAllowanceKeys.add(key);
+    }
+  }
+
   const previousAllowances = new Map(
     current.allowances.map((allowance) => [
       allowance.key.toLowerCase(),
-      allowance.maxRefill,
+      allowance,
     ]),
   );
 

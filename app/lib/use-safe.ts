@@ -8,10 +8,12 @@
  * inferred. Proposals go through the host, which removes the Transaction
  * Service API key and the manual hash-signing flow entirely.
  *
- * Outside the Safe UI the app still runs, read-only: live policy can be
+ * Outside the Safe UI the app still runs, read-only: indexed policy can be
  * inspected and a diff computed, but nothing can be proposed.
  */
+import { Interface, getAddress, isAddress } from "ethers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SubmissionResult } from "./submission";
 
 export type SafeHostInfo = {
   safeAddress: string;
@@ -35,19 +37,29 @@ type Sdk = {
   safe: { getInfo(): Promise<SafeHostInfo> };
   txs: { send(input: { txs: SafeTransaction[] }): Promise<{ safeTxHash: string }> };
   /** RPC proxied through the Safe host, so no separate provider is needed. */
-  eth: { getCode(params: [string]): Promise<string> };
+  eth: {
+    getCode(params: [string]): Promise<string>;
+    call(
+      params: [{ to: string; data: string; value?: string }, string?],
+    ): Promise<string>;
+  };
 };
 
 const HANDSHAKE_TIMEOUT_MS = 4000;
+const safeInterface = new Interface([
+  "function isModuleEnabled(address module) view returns (bool)",
+]);
 
 export type SafeContext = {
   mode: SafeMode;
   info: SafeHostInfo | null;
   error: string | null;
-  /** Submits a batch to the Safe queue. Resolves to the Safe transaction hash. */
-  propose: (transactions: SafeTransaction[]) => Promise<string>;
+  /** Submits a batch to the Safe queue. */
+  propose: (transactions: SafeTransaction[]) => Promise<SubmissionResult>;
   /** Reads bytecode at an address, or null when no provider is available. */
   getCode: (address: string) => Promise<string | null>;
+  /** Reads module enablement directly from the open Safe. Null means unknown. */
+  isModuleEnabled: (moduleAddress: string) => Promise<boolean | null>;
 };
 
 export function useSafe(): SafeContext {
@@ -98,7 +110,7 @@ export function useSafe(): SafeContext {
     };
   }, []);
 
-  const propose = useCallback(async (transactions: SafeTransaction[]) => {
+  const propose = useCallback<SafeContext["propose"]>(async (transactions) => {
     const sdk = sdkRef.current;
     if (!sdk) {
       throw new Error(
@@ -109,7 +121,7 @@ export function useSafe(): SafeContext {
       throw new Error("There is nothing to propose.");
     }
     const { safeTxHash } = await sdk.txs.send({ txs: transactions });
-    return safeTxHash;
+    return { kind: "safeTxHash", safeTxHash };
   }, []);
 
   const getCode = useCallback(async (address: string) => {
@@ -122,9 +134,30 @@ export function useSafe(): SafeContext {
     }
   }, []);
 
+  const isModuleEnabled = useCallback(async (moduleAddress: string) => {
+    const sdk = sdkRef.current;
+    const safeAddress = info?.safeAddress;
+    if (!sdk || !safeAddress || !isAddress(moduleAddress)) return null;
+    try {
+      const result = await sdk.eth.call([
+        {
+          to: getAddress(safeAddress),
+          data: safeInterface.encodeFunctionData("isModuleEnabled", [
+            getAddress(moduleAddress),
+          ]),
+        },
+      ]);
+      return Boolean(
+        safeInterface.decodeFunctionResult("isModuleEnabled", result)[0],
+      );
+    } catch {
+      return null;
+    }
+  }, [info?.safeAddress]);
+
   return useMemo(
-    () => ({ mode, info, error, propose, getCode }),
-    [mode, info, error, propose, getCode],
+    () => ({ mode, info, error, propose, getCode, isModuleEnabled }),
+    [mode, info, error, propose, getCode, isModuleEnabled],
   );
 }
 
@@ -141,15 +174,20 @@ export function verifyModifier({
   info,
   owner,
   avatar,
+  target,
   rolesMod,
   chainId,
+  moduleEnabled,
 }: {
   info: SafeHostInfo | null;
   owner: string | null;
   avatar: string | null;
+  target: string | null;
   rolesMod: string;
   /** Chain of the modifier being edited. */
   chainId: number | null;
+  /** Result of a direct `isModuleEnabled` read. Null means it could not be read. */
+  moduleEnabled: boolean | null;
 }): { ok: boolean; problems: string[] } {
   if (!info) {
     return {
@@ -172,9 +210,21 @@ export function verifyModifier({
       `The modifier acts on ${avatar ?? "an unknown avatar"}, not this Safe, so its permissions would not apply here.`,
     );
   }
+  if (!same(target, info.safeAddress)) {
+    problems.push(
+      `The modifier routes execution through ${target ?? "an unknown target"}, not this Safe.`,
+    );
+  }
   if (info.modules && !info.modules.some((module) => same(module, rolesMod))) {
     problems.push(
-      "The modifier is not an enabled module on this Safe, so it cannot execute transactions.",
+      "The Safe host does not list this modifier among the enabled modules.",
+    );
+  }
+  if (moduleEnabled !== true) {
+    problems.push(
+      moduleEnabled === false
+        ? "The modifier is not an enabled module on this Safe, so it cannot execute transactions."
+        : "The modifier's enabled-module status could not be verified on chain.",
     );
   }
   if (chainId !== null && chainId !== info.chainId) {

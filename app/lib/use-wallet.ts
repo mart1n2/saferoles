@@ -17,7 +17,12 @@
  * wallet supports it. Otherwise they are sent sequentially, which is reported
  * plainly because a partially-applied policy is a real outcome.
  */
+import { Interface, getAddress, isAddress } from "ethers";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  PartialSubmissionError,
+  type SubmissionResult,
+} from "./submission";
 
 type RequestArgs = { method: string; params?: unknown[] | object };
 
@@ -39,6 +44,13 @@ export type BatchSupport = "atomic" | "sequential";
 
 export type WalletTransaction = { to: string; value: string; data: string };
 
+export type WalletSafeInspection = {
+  status: "idle" | "checking" | "valid" | "invalid" | "unknown";
+  owners: string[];
+  threshold: number | null;
+  problem: string | null;
+};
+
 export type WalletState = {
   status: WalletStatus;
   account: string | null;
@@ -46,15 +58,37 @@ export type WalletState = {
   error: string | null;
   batchSupport: BatchSupport;
   connect: () => Promise<void>;
-  /**
-   * Submits the batch. Resolves to an identifier: an EIP-5792 bundle id, or the
-   * hash of the final transaction when sent sequentially.
-   */
-  send: (transactions: WalletTransaction[]) => Promise<string>;
+  /** Submits the batch while preserving which kind of identifier was returned. */
+  send: (transactions: WalletTransaction[]) => Promise<SubmissionResult>;
   /** Asks the wallet to move to `chainId`, so a modifier on another chain is reachable. */
   switchChain: (chainId: number) => Promise<void>;
   /** Reads bytecode at an address, or null when no provider is available. */
   getCode: (address: string) => Promise<string | null>;
+  /** Current connected-account check. An EOA never qualifies as a Safe. */
+  safeInspection: WalletSafeInspection;
+  /**
+   * Probes the current chain for the Safe interface. When `moduleAddress` is
+   * supplied, the result also comes from `isModuleEnabled` in the same probe.
+   */
+  inspectSafe: (
+    safeAddress: string,
+    moduleAddress?: string,
+  ) => Promise<WalletSafeInspection & { moduleEnabled: boolean | null }>;
+};
+
+const safeInterface = new Interface([
+  "function VERSION() view returns (string)",
+  "function getOwners() view returns (address[])",
+  "function getThreshold() view returns (uint256)",
+  "function nonce() view returns (uint256)",
+  "function isModuleEnabled(address module) view returns (bool)",
+]);
+
+const idleSafeInspection: WalletSafeInspection = {
+  status: "idle",
+  owners: [],
+  threshold: null,
+  problem: null,
 };
 
 function parseChainId(value: unknown): number | null {
@@ -72,6 +106,8 @@ export function useWallet(): WalletState {
   const [chainId, setChainId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [batchSupport, setBatchSupport] = useState<BatchSupport>("sequential");
+  const [safeInspection, setSafeInspection] =
+    useState<WalletSafeInspection>(idleSafeInspection);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -161,7 +197,7 @@ export function useWallet(): WalletState {
     }
   }, []);
 
-  const send = useCallback(
+  const send = useCallback<WalletState["send"]>(
     async (transactions: WalletTransaction[]) => {
       const provider = typeof window === "undefined" ? undefined : window.ethereum;
       if (!provider || !account || chainId === null) {
@@ -188,25 +224,40 @@ export function useWallet(): WalletState {
         })) as string | { id?: string };
         const id = typeof result === "string" ? result : result?.id;
         if (!id) throw new Error("The wallet did not return a batch identifier.");
-        return id;
+        return { kind: "bundleId", bundleId: id };
       }
 
       // Sequential fallback. Each call is a separate wallet confirmation.
-      let last = "";
+      const txHashes: string[] = [];
       for (const transaction of transactions) {
-        last = (await provider.request({
-          method: "eth_sendTransaction",
-          params: [
-            {
-              from: account,
-              to: transaction.to,
-              value: `0x${BigInt(transaction.value).toString(16)}`,
-              data: transaction.data,
-            },
-          ],
-        })) as string;
+        try {
+          const hash = await provider.request({
+            method: "eth_sendTransaction",
+            params: [
+              {
+                from: account,
+                to: transaction.to,
+                value: `0x${BigInt(transaction.value).toString(16)}`,
+                data: transaction.data,
+              },
+            ],
+          });
+          if (typeof hash !== "string" || !hash) {
+            throw new Error("The wallet did not return a transaction hash.");
+          }
+          txHashes.push(hash);
+        } catch (caught) {
+          if (txHashes.length > 0) {
+            throw new PartialSubmissionError(
+              `${txHashes.length} of ${transactions.length} calls were submitted before the wallet stopped. Do not retry the whole batch until those transactions are reconciled.`,
+              txHashes,
+              caught instanceof Error ? { cause: caught } : undefined,
+            );
+          }
+          throw caught;
+        }
       }
-      return last;
+      return { kind: "txHashes", txHashes };
     },
     [account, batchSupport, chainId],
   );
@@ -247,6 +298,165 @@ export function useWallet(): WalletState {
     }
   }, []);
 
+  const inspectSafe = useCallback<WalletState["inspectSafe"]>(
+    async (safeAddress, moduleAddress) => {
+      const provider = typeof window === "undefined" ? undefined : window.ethereum;
+      if (!provider) {
+        return {
+          ...idleSafeInspection,
+          status: "unknown",
+          problem: "No wallet provider is available to verify this Safe.",
+          moduleEnabled: null,
+        };
+      }
+      if (!isAddress(safeAddress)) {
+        return {
+          ...idleSafeInspection,
+          status: "invalid",
+          problem: "The connected account is not a valid address.",
+          moduleEnabled: null,
+        };
+      }
+      if (moduleAddress && !isAddress(moduleAddress)) {
+        return {
+          ...idleSafeInspection,
+          status: "invalid",
+          problem: "The modifier address is not valid.",
+          moduleEnabled: null,
+        };
+      }
+
+      const safeAddressChecked = getAddress(safeAddress);
+      const ethCall = async (data: string) =>
+        provider.request({
+          method: "eth_call",
+          params: [{ to: safeAddressChecked, data }, "latest"],
+        });
+
+      try {
+        const code = await provider.request({
+          method: "eth_getCode",
+          params: [safeAddressChecked, "latest"],
+        });
+        if (
+          typeof code !== "string" ||
+          !/^0x[0-9a-fA-F]+$/.test(code) ||
+          code.length <= 2
+        ) {
+          return {
+            ...idleSafeInspection,
+            status: "invalid",
+            problem:
+              "The connected account has no contract code. Select the Safe account in a Safe-aware wallet, not an owner EOA.",
+            moduleEnabled: null,
+          };
+        }
+
+        const [versionRaw, ownersRaw, thresholdRaw, nonceRaw] = await Promise.all([
+          ethCall(safeInterface.encodeFunctionData("VERSION")),
+          ethCall(safeInterface.encodeFunctionData("getOwners")),
+          ethCall(safeInterface.encodeFunctionData("getThreshold")),
+          ethCall(safeInterface.encodeFunctionData("nonce")),
+        ]);
+        if (
+          typeof versionRaw !== "string" ||
+          typeof ownersRaw !== "string" ||
+          typeof thresholdRaw !== "string" ||
+          typeof nonceRaw !== "string"
+        ) {
+          throw new Error("The provider returned an invalid Safe response.");
+        }
+        const version = String(
+          safeInterface.decodeFunctionResult("VERSION", versionRaw)[0],
+        );
+        const owners = [
+          ...(safeInterface.decodeFunctionResult("getOwners", ownersRaw)[0] as string[]),
+        ].map((owner) => getAddress(owner));
+        const thresholdValue = BigInt(
+          safeInterface.decodeFunctionResult("getThreshold", thresholdRaw)[0].toString(),
+        );
+        const nonce = BigInt(
+          safeInterface.decodeFunctionResult("nonce", nonceRaw)[0].toString(),
+        );
+        if (
+          !/^\d+\.\d+\.\d+(?:[-+].*)?$/.test(version) ||
+          owners.length === 0 ||
+          thresholdValue <= 0n ||
+          thresholdValue > BigInt(owners.length) ||
+          thresholdValue > BigInt(Number.MAX_SAFE_INTEGER) ||
+          nonce < 0n
+        ) {
+          return {
+            ...idleSafeInspection,
+            status: "invalid",
+            owners,
+            problem:
+              "The connected contract did not return a valid Safe owner set and threshold.",
+            moduleEnabled: null,
+          };
+        }
+
+        let moduleEnabled: boolean | null = null;
+        if (moduleAddress) {
+          const enabledRaw = await ethCall(
+            safeInterface.encodeFunctionData("isModuleEnabled", [
+              getAddress(moduleAddress),
+            ]),
+          );
+          if (typeof enabledRaw !== "string") {
+            throw new Error("The provider returned an invalid module response.");
+          }
+          moduleEnabled = Boolean(
+            safeInterface.decodeFunctionResult("isModuleEnabled", enabledRaw)[0],
+          );
+        }
+
+        return {
+          status: "valid",
+          owners,
+          threshold: Number(thresholdValue),
+          problem: null,
+          moduleEnabled,
+        };
+      } catch (caught) {
+        return {
+          ...idleSafeInspection,
+          status: "unknown",
+          problem: `Could not verify the connected account as a Safe: ${
+            caught instanceof Error ? caught.message : "the RPC read failed"
+          }`,
+          moduleEnabled: null,
+        };
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (status !== "connected" || !account || chainId === null) {
+      const timer = setTimeout(() => setSafeInspection(idleSafeInspection), 0);
+      return () => clearTimeout(timer);
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setSafeInspection({ ...idleSafeInspection, status: "checking" });
+      void inspectSafe(account).then((inspection) => {
+        if (!cancelled) {
+          setSafeInspection({
+            status: inspection.status,
+            owners: inspection.owners,
+            threshold: inspection.threshold,
+            problem: inspection.problem,
+          });
+        }
+      });
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [account, chainId, inspectSafe, status]);
+
   return useMemo(
     () => ({
       status,
@@ -258,8 +468,22 @@ export function useWallet(): WalletState {
       send,
       switchChain,
       getCode,
+      safeInspection,
+      inspectSafe,
     }),
-    [status, account, chainId, error, batchSupport, connect, send, switchChain, getCode],
+    [
+      status,
+      account,
+      chainId,
+      error,
+      batchSupport,
+      connect,
+      send,
+      switchChain,
+      getCode,
+      safeInspection,
+      inspectSafe,
+    ],
   );
 }
 
@@ -275,13 +499,19 @@ export function verifyWalletForModifier({
   chainId,
   owner,
   avatar,
+  target,
   modifierChainId,
+  safeStatus,
+  moduleEnabled,
 }: {
   account: string | null;
   chainId: number | null;
   owner: string | null;
   avatar: string | null;
+  target: string | null;
   modifierChainId: number | null;
+  safeStatus: WalletSafeInspection["status"];
+  moduleEnabled: boolean | null;
 }): { ok: boolean; problems: string[] } {
   if (!account) {
     return { ok: false, problems: ["Connect a wallet to submit changes."] };
@@ -301,9 +531,30 @@ export function verifyWalletForModifier({
       `Only the modifier's owner (${owner ?? "unknown"}) can change its configuration. Select that Safe as the active account — a Safe owner signing directly would be rejected.`,
     );
   }
-  if (owner && avatar && !same(owner, avatar)) {
+  if (!same(account, avatar)) {
     problems.push(
-      `This modifier is owned by ${owner} but acts on ${avatar}. Confirm that is intended before changing its policy.`,
+      `The modifier acts on ${avatar ?? "an unknown avatar"}, not the connected Safe.`,
+    );
+  }
+  if (!same(account, target)) {
+    problems.push(
+      `The modifier routes execution through ${target ?? "an unknown target"}, not the connected Safe.`,
+    );
+  }
+  if (safeStatus !== "valid") {
+    problems.push(
+      safeStatus === "checking"
+        ? "Verifying that the connected account is a Safe…"
+        : safeStatus === "invalid"
+          ? "The connected account is not a valid Safe. Select the Safe account, not an owner EOA."
+          : "The connected account could not be verified as a Safe.",
+    );
+  }
+  if (moduleEnabled !== true) {
+    problems.push(
+      moduleEnabled === false
+        ? "The modifier is not an enabled module on the connected Safe."
+        : "The modifier's enabled-module status could not be verified on chain.",
     );
   }
 

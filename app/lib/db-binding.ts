@@ -5,9 +5,9 @@
  * hands the binding over per request rather than this module guessing at
  * runtime globals.
  *
- * Resolution is tolerant on purpose: the console reads live policy from chain
- * and is fully usable without a database, so a missing binding degrades draft
- * persistence instead of breaking the app.
+ * Resolution is tolerant on purpose: the console can inspect indexed policy
+ * without a database, so a missing binding degrades draft persistence instead
+ * of breaking the app.
  */
 
 /** The subset of D1 this app uses. */
@@ -41,7 +41,7 @@ export function getDatabaseBinding(): D1Database | null {
 export class DatabaseUnavailableError extends Error {
   constructor() {
     super(
-      "No database is bound, so drafts cannot be saved. Live policy and proposals still work.",
+      "No database is bound, so drafts cannot be saved. Indexed policy inspection and proposals still work.",
     );
     this.name = "DatabaseUnavailableError";
   }

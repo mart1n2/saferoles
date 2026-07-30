@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Interface, getAddress } from "ethers";
 import {
+  APPROVED_ROLES_MASTERCOPY,
+  EXPECTED_FACTORY_RUNTIME_CODE_HASH,
+  EXPECTED_ROLES_RUNTIME_CODE_HASH,
   MODULE_PROXY_FACTORY,
   REQUIRED_ROLES_FUNCTIONS,
   SUGGESTED_ROLES_MASTERCOPY,
@@ -9,6 +12,7 @@ import {
   checksPass,
   evaluateMastercopy,
   freshSaltNonce,
+  runtimeCodeHash,
 } from "../app/lib/setup-roles";
 
 const safe = "0x849D52316331967b6fF1198e5E32A0eB168D039d";
@@ -32,6 +36,7 @@ const healthy = {
   code: "0x6080604052",
   abiName: "Roles",
   abiFunctions: [...REQUIRED_ROLES_FUNCTIONS],
+  abiSource: "sourcify" as const,
   factoryCode: "0x6080604052",
   predictedCode: "0x",
 };
@@ -100,10 +105,13 @@ test("the derived address is deterministic and salt-dependent", () => {
   );
 });
 
-test("a different mastercopy derives a different address", () => {
-  assert.notEqual(
-    plan().predictedAddress,
-    plan({ mastercopy: "0x1111111111111111111111111111111111111111" }).predictedAddress,
+test("an arbitrary mastercopy cannot be selected for setup", () => {
+  assert.throws(
+    () =>
+      plan({
+        mastercopy: "0x1111111111111111111111111111111111111111",
+      }),
+    /only supports the approved Roles mastercopy/,
   );
 });
 
@@ -118,9 +126,25 @@ test("incomplete addresses are rejected before anything is encoded", () => {
   );
 });
 
-test("a fully verified mastercopy passes every check", () => {
-  const checks = evaluateMastercopy(healthy);
-  assert.ok(checksPass(checks), JSON.stringify(checks, null, 2));
+test("setup pins the reviewed address and runtime identities", () => {
+  assert.equal(SUGGESTED_ROLES_MASTERCOPY, APPROVED_ROLES_MASTERCOPY);
+  assert.equal(
+    EXPECTED_ROLES_RUNTIME_CODE_HASH,
+    "0x471d8b3b419f1eb955230c0326c8812176df49bf3c7b414a563fda5a3c6c10b6",
+  );
+  assert.equal(
+    EXPECTED_FACTORY_RUNTIME_CODE_HASH,
+    "0x01623cbcf010a1c326230f1b2d5f48a66b440232ee49096102bc84967dc5f21e",
+  );
+  assert.equal(
+    runtimeCodeHash("0x6080604052"),
+    "0x1c3374235d773b2189aed115aa13143020fcdbbe86e38f358cf3e4771b2f0244",
+  );
+  assert.ok(
+    checksPass([
+      { id: "identity", label: "identity", status: "pass", detail: "pinned" },
+    ]),
+  );
 });
 
 test("an undeployed mastercopy fails", () => {
@@ -155,6 +179,15 @@ test("an unverifiable mastercopy fails rather than being assumed good", () => {
   assert.match(
     checks.find((entry) => entry.id === "verified")!.detail,
     /No published source/,
+  );
+});
+
+test("a manually supplied ABI is rejected as identity evidence", () => {
+  const checks = evaluateMastercopy({ ...healthy, abiSource: "manual" });
+  assert.equal(checksPass(checks), false);
+  assert.match(
+    checks.find((entry) => entry.id === "verified")!.detail,
+    /not independent identity evidence/,
   );
 });
 

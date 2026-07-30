@@ -1,36 +1,52 @@
 /**
- * Contract ABI lookup and manual entry.
+ * Contract ABI lookup and tenant-owned manual entry.
  *
- * GET  resolves an ABI for (chainId, address), preferring a stored copy.
- * POST stores a manually supplied ABI for contracts no source has verified.
- * DELETE forgets a stored ABI so the next lookup goes back to the live sources.
+ * Live verified-source lookup stays public. Manual reads/writes are scoped to
+ * the authenticated Sites user and never share a row with the public cache.
  */
-import { getAddress, isAddress } from "ethers";
-import { parseManualAbi, resolveAbi, type ResolvedAbi } from "../../lib/abi-source";
-import { forgetStoredAbi, readStoredAbi, writeStoredAbi } from "../../lib/abi-store";
+import { getPersistenceActor } from "../../chatgpt-auth";
+import {
+  parseManualAbi,
+  resolveAbi,
+  type ResolvedAbi,
+} from "../../lib/abi-source";
+import {
+  forgetStoredAbi,
+  readStoredAbi,
+  writeStoredAbi,
+} from "../../lib/abi-store";
+import { DatabaseUnavailableError } from "../../lib/db-binding";
 import { chainName, isSupportedChain } from "../../lib/chains";
-import { jsonResponse } from "../../lib/serialize";
+import {
+  InputError,
+  MAX_ABI_BODY_BYTES,
+  jsonResponse,
+  parseAbiScope,
+  parseJsonRequest,
+  parseManualAbiPayload,
+} from "../../lib/serialize";
 
-function readScope(url: URL): { chainId: number; address: string } | Response {
-  const address = url.searchParams.get("address") ?? "";
-  const chainId = Number(url.searchParams.get("chainId"));
-  if (!isAddress(address)) {
-    return jsonResponse({ error: "Provide a complete contract address." }, { status: 400 });
-  }
-  if (!Number.isInteger(chainId)) {
-    return jsonResponse({ error: "Provide a chainId." }, { status: 400 });
-  }
-  return { chainId, address: getAddress(address) };
-}
+const MAX_ABI_ENTRIES = 5_000;
+const MAX_ABI_FUNCTIONS = 2_000;
 
 export async function GET(request: Request): Promise<Response> {
-  const url = new URL(request.url);
-  const scope = readScope(url);
-  if (scope instanceof Response) return scope;
-  const { chainId, address } = scope;
+  let scope: { chainId: number; address: string };
+  try {
+    scope = parseAbiScope(new URL(request.url));
+  } catch (error) {
+    return handle(error);
+  }
 
-  const stored = await readStoredAbi(chainId, address);
-  if (stored) return jsonResponse({ abi: stored, cached: true });
+  const actor = await getPersistenceActor();
+  const { chainId, address } = scope;
+  let cacheWarning: string | undefined;
+  try {
+    const stored = await readStoredAbi(chainId, address, actor?.tenantId);
+    if (stored) return jsonResponse({ abi: stored, cached: true });
+  } catch {
+    // Cache corruption/outage must not prevent a public verified-source lookup.
+    cacheWarning = "The stored ABI cache could not be read; live sources were used.";
+  }
 
   let resolved: ResolvedAbi | null = null;
   try {
@@ -46,58 +62,111 @@ export async function GET(request: Request): Promise<Response> {
         reason: isSupportedChain(chainId)
           ? `No verified ABI was found for ${address} on ${chainName(chainId)}. Paste the ABI to continue.`
           : `Chain ${chainId} has no ABI source configured. Paste the ABI to continue.`,
+        ...(cacheWarning ? { cacheWarning } : {}),
       },
       { status: 200 },
     );
   }
 
-  await writeStoredAbi(resolved);
-  return jsonResponse({ abi: resolved, cached: false });
+  // Close the common read→resolve race: a manual entry saved while the live
+  // lookup was in flight is authoritative for this tenant.
+  if (actor) {
+    try {
+      const latest = await readStoredAbi(chainId, address, actor.tenantId);
+      if (latest?.source === "manual") {
+        return jsonResponse({ abi: latest, cached: true });
+      }
+    } catch {
+      cacheWarning =
+        "The manual ABI store could not be rechecked; the live verified ABI is shown.";
+    }
+  }
+
+  let cacheStored = false;
+  try {
+    await writeStoredAbi(resolved);
+    cacheStored = true;
+  } catch {
+    cacheWarning = "The live ABI was resolved but could not be cached.";
+  }
+  return jsonResponse({
+    abi: resolved,
+    cached: false,
+    cacheStored,
+    ...(cacheWarning ? { cacheWarning } : {}),
+  });
 }
 
 export async function POST(request: Request): Promise<Response> {
-  let body: { chainId?: number; address?: string; abi?: string; name?: string };
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ error: "Expected a JSON body." }, { status: 400 });
-  }
+  const actor = await getPersistenceActor();
+  if (!actor) return unauthorized();
 
-  if (!isAddress(body.address ?? "") || !Number.isInteger(body.chainId)) {
-    return jsonResponse(
-      { error: "A manual ABI needs a chainId and a complete contract address." },
-      { status: 400 },
+  try {
+    const body = parseManualAbiPayload(
+      await parseJsonRequest(request, MAX_ABI_BODY_BYTES),
     );
-  }
+    let parsed: ReturnType<typeof parseManualAbi>;
+    try {
+      parsed = parseManualAbi(body.abi);
+    } catch (error) {
+      throw new InputError(
+        error instanceof Error ? error.message : "That ABI could not be read.",
+      );
+    }
+    if (
+      parsed.abi.length > MAX_ABI_ENTRIES ||
+      parsed.functions.length > MAX_ABI_FUNCTIONS
+    ) {
+      throw new InputError(
+        `ABI exceeds the ${MAX_ABI_ENTRIES}-entry or ${MAX_ABI_FUNCTIONS}-function limit.`,
+        413,
+      );
+    }
 
-  let parsed: { abi: unknown[]; functions: ReturnType<typeof parseManualAbi>["functions"] };
-  try {
-    parsed = parseManualAbi(body.abi ?? "");
+    const resolved: ResolvedAbi = {
+      chainId: body.chainId,
+      address: body.address,
+      source: "manual",
+      name: body.name?.trim() || null,
+      implementation: null,
+      proxyType: null,
+      functions: parsed.functions,
+      abi: parsed.abi,
+    };
+    await writeStoredAbi(resolved, actor.tenantId);
+    return jsonResponse({ abi: resolved }, { status: 201 });
   } catch (error) {
-    return jsonResponse(
-      { error: error instanceof Error ? error.message : "That ABI could not be read." },
-      { status: 400 },
-    );
+    return handle(error);
   }
-
-  const resolved: ResolvedAbi = {
-    chainId: body.chainId as number,
-    address: getAddress(body.address as string),
-    source: "manual",
-    name: body.name?.trim() || null,
-    implementation: null,
-    proxyType: null,
-    functions: parsed.functions,
-    abi: parsed.abi,
-  };
-
-  await writeStoredAbi(resolved);
-  return jsonResponse({ abi: resolved }, { status: 201 });
 }
 
 export async function DELETE(request: Request): Promise<Response> {
-  const scope = readScope(new URL(request.url));
-  if (scope instanceof Response) return scope;
-  await forgetStoredAbi(scope.chainId, scope.address);
-  return jsonResponse({ forgotten: true });
+  const actor = await getPersistenceActor();
+  if (!actor) return unauthorized();
+
+  try {
+    const scope = parseAbiScope(new URL(request.url));
+    const forgotten = await forgetStoredAbi(
+      scope.chainId,
+      scope.address,
+      actor.tenantId,
+    );
+    return jsonResponse({ forgotten });
+  } catch (error) {
+    return handle(error);
+  }
+}
+
+function unauthorized(): Response {
+  return jsonResponse({ error: "Authentication is required." }, { status: 401 });
+}
+
+function handle(error: unknown): Response {
+  if (error instanceof InputError) {
+    return jsonResponse({ error: error.message }, { status: error.status });
+  }
+  if (error instanceof DatabaseUnavailableError) {
+    return jsonResponse({ error: error.message }, { status: 503 });
+  }
+  return jsonResponse({ error: "ABI storage failed." }, { status: 500 });
 }

@@ -25,11 +25,20 @@ async function ensureSchema(database: D1Database): Promise<void> {
 }
 
 export async function getClient(): Promise<Client> {
-  const database = requireDatabase();
-  await ensureSchema(database);
+  const database = await getDatabase();
   // The drizzle d1 driver expects the full D1Database surface; the local type
   // narrows it to what this app uses.
   return drizzle(database as never, { schema });
+}
+
+/**
+ * Returns the same bootstrapped binding used by Drizzle. Persistence services
+ * use this for D1's atomic `batch()` primitive.
+ */
+export async function getDatabase(): Promise<D1Database> {
+  const database = requireDatabase();
+  await ensureSchema(database);
+  return database;
 }
 
 export { schema };

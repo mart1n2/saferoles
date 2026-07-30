@@ -1,14 +1,30 @@
+import { getPersistenceActor } from "../../../chatgpt-auth";
 import { DatabaseUnavailableError } from "../../../lib/db-binding";
-import { deleteDraft, getDraft, saveDraft } from "../../../lib/drafts";
-import { jsonResponse } from "../../../lib/serialize";
-import type { DraftPolicy } from "../../../lib/policy";
+import {
+  DraftVersionConflictError,
+  deleteDraft,
+  getDraft,
+  saveDraft,
+} from "../../../lib/drafts";
+import {
+  InputError,
+  MAX_DRAFT_BODY_BYTES,
+  jsonResponse,
+  parseDraftScope,
+  parseDraftUpdatePayload,
+  parseJsonRequest,
+} from "../../../lib/serialize";
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function GET(_request: Request, context: Context): Promise<Response> {
+export async function GET(request: Request, context: Context): Promise<Response> {
+  const actor = await getPersistenceActor();
+  if (!actor) return unauthorized();
+
   const { id } = await context.params;
   try {
-    const draft = await getDraft(id);
+    const scope = parseDraftScope(new URL(request.url));
+    const draft = await getDraft(actor, id, scope);
     if (!draft) return jsonResponse({ error: "No such draft." }, { status: 404 });
     return jsonResponse({ draft });
   } catch (error) {
@@ -17,31 +33,17 @@ export async function GET(_request: Request, context: Context): Promise<Response
 }
 
 export async function PUT(request: Request, context: Context): Promise<Response> {
-  const { id } = await context.params;
-  let body: {
-    policy?: DraftPolicy;
-    name?: string;
-    note?: string | null;
-    author?: string | null;
-    baseStateHash?: string | null;
-  };
-  try {
-    body = await request.json();
-  } catch {
-    return jsonResponse({ error: "Expected a JSON body." }, { status: 400 });
-  }
-  if (!body.policy) {
-    return jsonResponse({ error: "A policy is required." }, { status: 400 });
-  }
+  const actor = await getPersistenceActor();
+  if (!actor) return unauthorized();
 
+  const { id } = await context.params;
   try {
-    const draft = await saveDraft({
+    const body = parseDraftUpdatePayload(
+      await parseJsonRequest(request, MAX_DRAFT_BODY_BYTES),
+    );
+    const draft = await saveDraft(actor, {
       draftId: id,
-      policy: body.policy,
-      name: body.name,
-      note: body.note ?? null,
-      author: body.author ?? null,
-      baseStateHash: body.baseStateHash ?? null,
+      ...body,
     });
     if (!draft) return jsonResponse({ error: "No such draft." }, { status: 404 });
     return jsonResponse({ draft });
@@ -50,26 +52,42 @@ export async function PUT(request: Request, context: Context): Promise<Response>
   }
 }
 
-export async function DELETE(_request: Request, context: Context): Promise<Response> {
+export async function DELETE(request: Request, context: Context): Promise<Response> {
+  const actor = await getPersistenceActor();
+  if (!actor) return unauthorized();
+
   const { id } = await context.params;
   try {
-    await deleteDraft(id);
+    const scope = parseDraftScope(new URL(request.url), { requireVersion: true });
+    const deleted = await deleteDraft(
+      actor,
+      id,
+      scope,
+      scope.version as number,
+    );
+    if (!deleted) return jsonResponse({ error: "No such draft." }, { status: 404 });
     return jsonResponse({ deleted: true });
   } catch (error) {
     return handle(error);
   }
 }
 
+function unauthorized(): Response {
+  return jsonResponse({ error: "Authentication is required." }, { status: 401 });
+}
+
 function handle(error: unknown): Response {
+  if (error instanceof InputError) {
+    return jsonResponse({ error: error.message }, { status: error.status });
+  }
+  if (error instanceof DraftVersionConflictError) {
+    return jsonResponse(
+      { error: error.message, currentVersion: error.currentVersion },
+      { status: 409 },
+    );
+  }
   if (error instanceof DatabaseUnavailableError) {
     return jsonResponse({ error: error.message }, { status: 503 });
   }
-  return jsonResponse(
-    {
-      error: `Draft storage failed: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`,
-    },
-    { status: 500 },
-  );
+  return jsonResponse({ error: "Draft storage failed." }, { status: 500 });
 }

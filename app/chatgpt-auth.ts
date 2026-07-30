@@ -7,6 +7,14 @@ export type ChatGPTUser = {
   fullName: string | null;
 };
 
+export type PersistenceActor = {
+  /** Stable tenant boundary for persisted application data. */
+  tenantId: string;
+  /** Trusted display identity, derived from the hosting authentication header. */
+  displayName: string;
+  email: string;
+};
+
 const USER_EMAIL_HEADER = "oai-authenticated-user-email";
 const USER_FULL_NAME_HEADER = "oai-authenticated-user-full-name";
 const USER_FULL_NAME_ENCODING_HEADER =
@@ -18,7 +26,20 @@ const CALLBACK_PATH = "/callback";
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
-  const email = requestHeaders.get(USER_EMAIL_HEADER);
+  return chatGPTUserFromHeaders(requestHeaders);
+}
+
+/**
+ * Pure header parser kept separate from Next's request context so the trust
+ * boundary can be unit tested.
+ *
+ * These headers are authoritative only behind Sites/ChatGPT ingress, which
+ * strips client-supplied copies before setting the authenticated identity.
+ */
+export function chatGPTUserFromHeaders(
+  requestHeaders: Pick<Headers, "get">,
+): ChatGPTUser | null {
+  const email = normalizeEmail(requestHeaders.get(USER_EMAIL_HEADER));
   if (!email) return null;
 
   const encodedFullName = requestHeaders.get(USER_FULL_NAME_HEADER);
@@ -32,6 +53,16 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
     displayName: fullName ?? email,
     email,
     fullName,
+  };
+}
+
+export async function getPersistenceActor(): Promise<PersistenceActor | null> {
+  const user = await getChatGPTUser();
+  if (!user) return null;
+  return {
+    tenantId: `email:${user.email}`,
+    displayName: user.displayName,
+    email: user.email,
   };
 }
 
@@ -83,4 +114,18 @@ function safeDecodeURIComponent(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function normalizeEmail(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized.length === 0 ||
+    normalized.length > 320 ||
+    /[\u0000-\u001f\u007f]/.test(normalized) ||
+    !/^[^@\s]+@[^@\s]+$/.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
 }

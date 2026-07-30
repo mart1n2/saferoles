@@ -2,34 +2,37 @@
 
 RBAC policy control for **Zodiac Roles**, with Safe-native approvals.
 
-SafeRoles reads a Roles modifier's live on-chain configuration, lets you edit it,
-and submits the exact difference for Safe approval. The diff a reviewer reads and
-the calldata that gets signed are the same object — there is no separate edit log
-that can drift from what is actually proposed.
+SafeRoles reads an indexed snapshot of a Roles modifier's on-chain
+configuration, lets you edit it, and submits the exact difference from that
+snapshot for Safe approval. The diff a reviewer reads and the calldata that gets
+signed are the same object — there is no separate edit log that can drift from
+what is actually proposed.
 
 ## How it works
 
-1. **Read live state.** The modifier's current policy (roles, members, targets,
+1. **Read indexed state.** The modifier's policy (roles, members, targets,
    conditions, allowances) is read through the Zodiac Roles indexer, proxied by
    this app's Worker so it also works inside the Safe App iframe.
 2. **Edit a draft** of that state.
-3. **Plan continuously.** Every edit re-diffs draft against live state and
-   produces the exact Roles calls needed, via `zodiac-roles-sdk`.
+3. **Plan continuously.** Every edit re-diffs the draft against the loaded
+   snapshot and produces the exact Roles calls needed, via
+   `zodiac-roles-sdk`.
 4. **Submit.** The batch goes to the Safe for threshold approval.
 
 ### Fidelity guarantees
 
 These are the properties that make the diff trustworthy, each covered by a test:
 
-- **Importing a policy and changing nothing plans nothing.** Verified against a
-  live 4-role, 188-permission mainnet policy: zero calls.
+- **Importing a policy and changing nothing plans nothing.** Synthetic fixtures
+  cover ordinary permissions as well as residual on-chain state the editor
+  cannot reproduce: both plan zero calls when untouched.
 - **Conditions the editor cannot represent are never rewritten.** Nested
   `and`/`or`, tuple matching and bitmasks are preserved byte-for-byte and shown
   read-only rather than approximated into something weaker.
 - **Nothing is planned while any value is invalid.** An unencodable role is an
   *absent* role, and absence reads to the planner as "revoke everything in it".
-  Issues therefore block the diff entirely instead of producing a plausible-looking
-  mass revocation.
+  Issues therefore block the diff entirely instead of producing a
+  plausible-looking mass revocation.
 - **State the model cannot reproduce is replayed verbatim**, so editing one field
   never incidentally cleans up unrelated on-chain rows.
 - **Encoded values are never scraped from display text.** A condition's value and
@@ -45,6 +48,22 @@ clearance transitions). Before anything is signed, the SDK's integrity check —
 the same rule set as the modifier's `Integrity.sol` — runs locally, turning what
 would be an on-chain revert *after* owners have signed into a blocking pre-flight
 error.
+
+### Trust and freshness
+
+The policy snapshot comes from the Zodiac Roles indexer. SafeRoles validates and
+round-trips that response, but it does not prove the indexer's block freshness or
+anchor the snapshot to a block number. Immediately before submission it fetches
+the policy again and compares fingerprints. A changed snapshot blocks submission
+and requires a fresh review. This catches changes already visible to the indexer;
+it does not remove indexer lag or establish chain finality. A saved draft's base
+fingerprint provides the same kind of stale-draft warning when it is reopened.
+
+ABIs from Sourcify, Etherscan, or manual input are authoring and display
+metadata. SafeRoles verifies that an adopted signature hashes to the stored
+selector, but a manual or stale ABI can still describe the wrong implementation
+or misleading parameter names. The target address, selector, conditions, and
+encoded calldata are what the modifier enforces.
 
 ## First-time setup
 
@@ -62,23 +81,25 @@ every check passes:
 
 | Check | Why |
 | --- | --- |
-| Address is well formed | A corrupt checksum means a mistyped address. |
+| Address is the approved mastercopy | Setup cannot substitute an arbitrary module implementation. |
 | Contract exists on this chain | `eth_getCode` is non-empty. |
+| Runtime bytecode matches | The deployed code hashes to the reviewed Roles runtime. |
 | Source identifies as Roles | Published source names it `Roles` **and** declares the full Roles v2 interface. |
-| Zodiac factory is available | Confirms the factory is deployed on this chain, or the deploy would revert. |
+| Zodiac factory runtime matches | The factory exists and hashes to the reviewed runtime. |
 | Target address is unoccupied | Deploying over an existing proxy reverts. |
 
-The mastercopy field is pre-filled with the address Zodiac deploys Roles v2 to on
-every supported chain, but it is treated strictly as a *suggestion* — verified at
-runtime like any other input, never trusted for being hardcoded. Replace it to
-deploy from a different mastercopy.
+The mastercopy is pinned to the reviewed Roles v2 deployment; it is displayed,
+not editable. Supporting another implementation requires a reviewed code change
+that updates both the approved address and expected runtime hash.
 
 The derived proxy address is shown before submission, and it is the same address
 the encoded `enableModule` call enables. Change the salt to derive a different
 one.
 
-Setup works from the Safe UI, and from a Safe-aware wallet with the Safe selected
-as the active account.
+Setup works from the Safe UI, and from an atomic-batch-capable Safe-aware wallet
+with a positively identified Safe selected as the active account. Sequential
+wallet fallback is blocked for setup so deployment and module enablement cannot
+partially apply.
 
 ## Choosing what a role may call
 
@@ -135,12 +156,27 @@ Two paths, both without a Transaction Service API key:
   which the UI states plainly because a partially-applied policy is a real
   outcome.
 
+Submission references retain their actual type instead of treating every wallet
+response as a Safe transaction hash:
+
+- a Safe App proposal returns a `safeTxHash`, which can be linked to the Safe
+  queue;
+- an atomic EIP-5792 submission returns a `bundleId`, which belongs to the
+  connected wallet and is queried with `wallet_getCallsStatus`;
+- sequential fallback returns `txHashes`, one per confirmed call. Those are
+  chain transaction hashes, and partial completion is possible.
+
+Proposal history is a best-effort record of what this console submitted. The
+Safe or wallet remains authoritative for acceptance, confirmations, execution,
+and failure; a local history row is not cryptographic proof that a proposal
+executed.
+
 Because Roles configuration calls are only accepted from the modifier's owner,
 the connected account must be **the owning Safe** — an owner EOA signing directly
 would revert. That is checked before submission rather than discovered after.
 
-Outside both paths the console still runs read-only: inspect any modifier's live
-policy and plan a diff, but nothing can be submitted.
+Outside both paths the console still runs read-only: inspect any modifier's
+indexed policy snapshot and plan a diff, but nothing can be submitted.
 
 Before enabling submission, three conditions are verified: the Safe owns the
 modifier, the modifier's avatar is that Safe, and the modifier is an enabled
@@ -148,19 +184,26 @@ module on it.
 
 ## Persistence
 
-Drafts, revisions, proposal history and resolved ABIs are stored in Cloudflare D1 via Drizzle,
-scoped by `(chainId, rolesMod)` so history survives role renames. A draft records
-a fingerprint of the state it was based on, so reopening it warns when the
-modifier has moved on underneath.
+Drafts, revisions, proposal history, and ABIs are stored in Cloudflare D1 via
+Drizzle. User-authored rows are scoped first by the authenticated ChatGPT
+identity and then by `(chainId, rolesMod)`, so one signed-in user cannot read or
+mutate another user's workspace. A draft records a fingerprint of the state it
+was based on, so reopening it warns when the modifier has moved on underneath.
+Verified-source ABI cache rows are separate from authoritative per-user manual
+entries.
 
-The database is optional. With no binding, drafts are simply not offered; live
-policy and submission are unaffected.
+The database is optional. With no binding, authenticated persistence is not
+offered; indexed policy reads, planning, and submission are unaffected.
 
-`db/ddl.ts` is the source of truth for the schema; `drizzle/0000_init.sql` is
-generated from it and a test fails if they drift.
+`db/ddl.ts` is the source of truth for both migrations.
+`drizzle/0000_init.sql` retains the original anonymous schema for deployment
+history; `drizzle/0001_authenticated_persistence.sql` creates the tenant-scoped
+tables used by the application. Anonymous rows are intentionally not migrated
+because they have no trustworthy owner. Tests fail if either generated migration
+drifts.
 
 ```bash
-npm run db:generate   # regenerate drizzle/0000_init.sql
+npm run db:generate   # regenerate the checked-in migration files
 ```
 
 ## Local development
@@ -175,10 +218,12 @@ npm run dev
 Validation:
 
 ```bash
-npm test          # unit + schema tests, then build, then SSR checks
-npx tsc --noEmit
-npm run lint
+npm test          # typecheck, lint, unit/schema tests, build, then rendered checks
 ```
+
+`npm run typecheck`, `npm run lint`, `npm run test:unit`, and
+`npm run test:rendered` remain available for focused local checks. CI runs the
+full `npm test` gate on the minimum supported Node.js release and Node.js 24.
 
 `GET /api/health` reports whether the route layer and D1 binding are reachable.
 
@@ -186,7 +231,7 @@ npm run lint
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `DB` (D1 binding) | no | Drafts, proposal history, ABI cache. Without it, drafts are not offered. |
+| `DB` (D1 binding) | no | Authenticated drafts, proposal history, and ABI cache. Without it, persistence is not offered. |
 | `ETHERSCAN_API_KEY` | no | Fallback ABI source for contracts Sourcify has not verified. |
 
 ## Scope
@@ -222,11 +267,14 @@ display metadata and cannot reach calldata — a test asserts that a label namin
 
 ## Limitations
 
-- **No authentication.** Drafts are scoped by `(chainId, rolesMod)`, which is
-  public information, so anyone who can reach the deployment can read or modify
-  them. Nothing can be submitted without the Safe or a Safe-aware wallet, and
-  every proposal shows its full diff before signing, but a shared deployment
-  should sit behind access control.
+- Sites access policy is the outer deployment gate, while persisted user data is
+  keyed from the authenticated ChatGPT identity supplied by Sites. Authentication
+  controls stored drafts/history; it does not replace Safe ownership checks or
+  authorize an on-chain transaction. Do not place the Worker behind a proxy that
+  allows clients to forge the `oai-authenticated-user-*` headers.
+- Indexer freshness and ABI provenance have the trust boundaries described
+  above. Reloading reduces staleness but does not turn either source into an
+  on-chain proof.
 - The Safe App handshake and `wallet_sendCalls` are exercised against a stub, not
   a real Safe iframe or wallet session.
 - The deploy-and-enable batch has not been executed on-chain. Try it on a testnet

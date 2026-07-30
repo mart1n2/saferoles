@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { isAddress } from "ethers";
 import { chainName, safeTransactionUrl, supportedChainIds } from "./lib/chains";
@@ -13,7 +14,6 @@ import {
   type ConditionOperator,
   type DraftAllowance,
   type DraftPermission,
-  type DraftPolicy,
   type DraftRole,
 } from "./lib/policy";
 import { adoptSignature } from "./lib/policy-codec";
@@ -22,7 +22,20 @@ import { useDiscoveredMods, usePolicy, type Scope } from "./lib/use-policy";
 import { useSafe, verifyModifier } from "./lib/use-safe";
 import { useWallet, verifyWalletForModifier } from "./lib/use-wallet";
 import { useDrafts, type DraftSummary } from "./lib/use-drafts";
-import { SetupDialog, type SetupSubmitter } from "./setup-dialog";
+import {
+  submissionReferences,
+  type SubmissionResult,
+} from "./lib/submission";
+import type { SetupSubmitter } from "./setup-dialog";
+
+const SetupDialog = dynamic(
+  () => import("./setup-dialog").then((module) => module.SetupDialog),
+  { ssr: false },
+);
+const ReviewDialog = dynamic(
+  () => import("./review-dialog").then((module) => module.ReviewDialog),
+  { ssr: false },
+);
 
 const tabs = ["Permissions", "Members", "Allowances", "Activity"] as const;
 type Tab = (typeof tabs)[number];
@@ -137,7 +150,11 @@ export default function Home() {
   const [deployedModifier, setDeployedModifier] = useState<string | null>(null);
   const [showNewRole, setShowNewRole] = useState(false);
   const [draftId, setDraftId] = useState<string | null>(null);
+  const [draftVersion, setDraftVersion] = useState<number | null>(null);
   const [staleBase, setStaleBase] = useState(false);
+  const [baselineNotice, setBaselineNotice] = useState<
+    "changed" | "indexer-pending" | "submitted" | null
+  >(null);
   const [newRoleName, setNewRoleName] = useState("");
   const [newMemberAddress, setNewMemberAddress] = useState("");
   const [newMemberLabel, setNewMemberLabel] = useState("");
@@ -161,7 +178,9 @@ export default function Home() {
   const openScope = useCallback(
     (scope: Scope) => {
       setDraftId(null);
+      setDraftVersion(null);
       setStaleBase(false);
+      setBaselineNotice(null);
       setDeployedModifier(null);
       setSelectedRoleId(null);
       setSelectedPermissionId(null);
@@ -171,21 +190,26 @@ export default function Home() {
   );
 
   const saveDraft = useCallback(
-    async (existingId: string | null, name = "Policy update") => {
+    async (
+      existingId: string | null,
+      existingVersion: number | null,
+      name = "Policy update",
+    ) => {
       if (!policy.draft || !policy.scope) return;
-      const id = await drafts.save({
+      const saved = await drafts.save({
         name,
         policy: policy.draft,
         safeAddress:
           safe.info?.safeAddress ?? policy.facts?.avatar ?? policy.scope.rolesMod,
         baseStateHash: policy.baseHash,
-        author: wallet.account ?? safe.info?.safeAddress ?? null,
         draftId: existingId,
+        draftVersion: existingVersion,
       });
-      setDraftId(id);
-      return id;
+      setDraftId(saved.id);
+      setDraftVersion(saved.version);
+      return saved.id;
     },
-    [drafts, policy.baseHash, policy.draft, policy.facts, policy.scope, safe.info, wallet.account],
+    [drafts, policy.baseHash, policy.draft, policy.facts, policy.scope, safe.info],
   );
 
   // With exactly one modifier on the Safe's own chain there is nothing to choose.
@@ -406,6 +430,62 @@ export default function Home() {
         ? "wallet"
         : "none";
 
+  const moduleProbeKey =
+    policy.scope && submitVia !== "none"
+      ? [
+          submitVia,
+          policy.scope.chainId,
+          policy.scope.rolesMod.toLowerCase(),
+          (submitVia === "safe-app"
+            ? safe.info?.safeAddress
+            : wallet.account
+          )?.toLowerCase() ?? "",
+        ].join(":")
+      : null;
+  const [moduleProbe, setModuleProbe] = useState<{
+    key: string;
+    enabled: boolean | null;
+  } | null>(null);
+  const checkSafeModule = safe.isModuleEnabled;
+  const inspectWalletSafe = wallet.inspectSafe;
+
+  useEffect(() => {
+    if (!policy.scope || !moduleProbeKey || submitVia === "none") return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void (async () => {
+        const enabled =
+          submitVia === "safe-app"
+            ? await checkSafeModule(policy.scope!.rolesMod)
+            : wallet.account
+              ? (
+                  await inspectWalletSafe(
+                    wallet.account,
+                    policy.scope!.rolesMod,
+                  )
+                ).moduleEnabled
+              : null;
+        if (!cancelled) {
+          setModuleProbe({ key: moduleProbeKey, enabled });
+        }
+      })();
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    moduleProbeKey,
+    policy.scope,
+    checkSafeModule,
+    inspectWalletSafe,
+    submitVia,
+    wallet.account,
+  ]);
+
+  const moduleEnabled =
+    moduleProbe?.key === moduleProbeKey ? moduleProbe.enabled : null;
+
   const verification = useMemo(() => {
     if (submitVia === "wallet") {
       return verifyWalletForModifier({
@@ -413,17 +493,31 @@ export default function Home() {
         chainId: wallet.chainId,
         owner: policy.facts?.owner ?? null,
         avatar: policy.facts?.avatar ?? null,
+        target: policy.facts?.target ?? null,
         modifierChainId: policy.scope?.chainId ?? null,
+        safeStatus: wallet.safeInspection.status,
+        moduleEnabled,
       });
     }
     return verifyModifier({
       info: safe.info,
       owner: policy.facts?.owner ?? null,
       avatar: policy.facts?.avatar ?? null,
+      target: policy.facts?.target ?? null,
       rolesMod: policy.scope?.rolesMod ?? "",
       chainId: policy.scope?.chainId ?? null,
+      moduleEnabled,
     });
-  }, [policy.facts, policy.scope, safe.info, submitVia, wallet.account, wallet.chainId]);
+  }, [
+    moduleEnabled,
+    policy.facts,
+    policy.scope,
+    safe.info,
+    submitVia,
+    wallet.account,
+    wallet.chainId,
+    wallet.safeInspection.status,
+  ]);
 
   /**
    * The Safe that setup would deploy for.
@@ -433,19 +527,50 @@ export default function Home() {
    * can submit policy changes at all.
    */
   const setupSafeAddress =
-    safe.info?.safeAddress ?? (submitVia === "wallet" ? wallet.account : null);
+    safe.info?.safeAddress ??
+    (submitVia === "wallet" && wallet.safeInspection.status === "valid"
+      ? wallet.account
+      : null);
+  const setupChainId =
+    submitVia === "safe-app" ? safe.info?.chainId ?? null : wallet.chainId;
 
   // Whichever route can actually submit a batch, exposed uniformly so setup does
   // not need to know which one is active.
   const setupSubmitter = useMemo<SetupSubmitter | null>(() => {
     if (submitVia === "safe-app") {
-      return { label: "the Safe queue", submit: safe.propose, getCode: safe.getCode };
+      if (!safe.info || safe.info.isReadOnly) return null;
+      return {
+        label: "the Safe queue",
+        submit: safe.propose,
+        getCode: safe.getCode,
+        chainId: safe.info.chainId,
+        atomic: true,
+        safeVerified: true,
+      };
     }
     if (submitVia === "wallet") {
-      return { label: "your wallet", submit: wallet.send, getCode: wallet.getCode };
+      if (wallet.chainId === null) return null;
+      return {
+        label: "your wallet",
+        submit: wallet.send,
+        getCode: wallet.getCode,
+        chainId: wallet.chainId,
+        atomic: wallet.batchSupport === "atomic",
+        safeVerified: wallet.safeInspection.status === "valid",
+      };
     }
     return null;
-  }, [safe.getCode, safe.propose, submitVia, wallet.getCode, wallet.send]);
+  }, [
+    safe.getCode,
+    safe.info,
+    safe.propose,
+    submitVia,
+    wallet.batchSupport,
+    wallet.chainId,
+    wallet.getCode,
+    wallet.safeInspection.status,
+    wallet.send,
+  ]);
 
   const plan = policy.plan;
   const blockingIssues = plan.issues;
@@ -475,15 +600,16 @@ export default function Home() {
       <>
         <ScopePicker
           safe={safe}
+          wallet={wallet}
           mods={mods}
           modsLoading={modsLoading}
           modsError={modsError}
           onSelect={openScope}
           onSetUp={setupSafeAddress ? () => setShowSetup(true) : undefined}
         />
-        {showSetup && setupSafeAddress && (
+        {showSetup && setupSafeAddress && setupChainId !== null && (
           <SetupDialog
-            chainId={safe.info?.chainId ?? wallet.chainId ?? 1}
+            chainId={setupChainId}
             safeAddress={setupSafeAddress}
             submitter={setupSubmitter}
             onClose={() => setShowSetup(false)}
@@ -642,7 +768,7 @@ export default function Home() {
         <div className="banner info">
           <b>Read-only</b>
           <p>
-            Live policy is shown and changes are planned. To submit, either open
+            The indexed policy snapshot is shown and changes are planned. To submit, either open
             SafeRoles as a Safe App, or connect a Safe-aware wallet with the
             owning Safe selected as the active account.
           </p>
@@ -682,9 +808,40 @@ export default function Home() {
           <b>This draft was based on an older configuration</b>
           <p>
             The modifier has changed since the draft was saved — another proposal has
-            likely executed since. The diff is computed against the current live state,
+            likely executed since. The diff is computed against the current indexed snapshot,
             so re-check it before submitting.
           </p>
+        </div>
+      )}
+
+      {baselineNotice && (
+        <div
+          className={`banner ${
+            baselineNotice === "submitted" ? "info" : "danger"
+          }`}
+          role="status"
+        >
+          <b>
+            {baselineNotice === "changed"
+              ? "Indexed policy changed — review rebuilt"
+              : baselineNotice === "indexer-pending"
+                ? "Waiting for the policy indexer"
+                : "Submission accepted — waiting for indexed state"}
+          </b>
+          <p>
+            {baselineNotice === "changed"
+              ? "The indexed baseline changed after this review opened. No transaction was submitted. The diff now uses the newer snapshot; open review again and inspect the rebuilt calls."
+              : "Another proposal was already submitted from this baseline. New submissions are blocked until the indexer observes the resulting policy, preventing a second diff from being built on stale state."}
+          </p>
+          <button
+            className="button secondary"
+            onClick={() => {
+              setBaselineNotice(null);
+              void policy.reload();
+            }}
+          >
+            Refresh indexed state
+          </button>
         </div>
       )}
 
@@ -702,7 +859,7 @@ export default function Home() {
         <aside className="role-sidebar">
           <div className="sidebar-heading">
             <div>
-              <span className="eyebrow">Live policy</span>
+              <span className="eyebrow">Indexed policy</span>
               <h1>Roles</h1>
             </div>
             <button
@@ -1136,7 +1293,7 @@ export default function Home() {
                     setShowDrafts(true);
                     return;
                   }
-                  void saveDraft(draftId);
+                  void saveDraft(draftId, draftVersion);
                 }}
                 disabled={drafts.busy}
               >
@@ -1195,16 +1352,17 @@ export default function Home() {
           currentBaseHash={policy.baseHash}
           canSave={policy.dirty || plan.changes.length > 0}
           onSave={async (name) => {
-            await saveDraft(draftId, name);
+            await saveDraft(draftId, draftVersion, name);
             setShowDrafts(false);
           }}
           onClose={() => setShowDrafts(false)}
           onOpen={async (summary) => {
-            const opened = await drafts.open(summary.id);
+            const opened = await drafts.open(summary);
             policy.applyDraft(opened.policy);
             setDraftId(summary.id);
+            setDraftVersion(opened.version);
             // A draft saved against a different baseline still shows a diff, but
-            // against today's live state — say so rather than imply it is fresh.
+            // against today's indexed snapshot — say so rather than imply it is fresh.
             setStaleBase(
               Boolean(
                 opened.baseStateHash &&
@@ -1238,9 +1396,9 @@ export default function Home() {
         />
       )}
 
-      {showSetup && setupSafeAddress && (
+      {showSetup && setupSafeAddress && setupChainId !== null && (
         <SetupDialog
-          chainId={policy.scope.chainId}
+          chainId={setupChainId}
           safeAddress={setupSafeAddress}
           submitter={setupSubmitter}
           onClose={() => setShowSetup(false)}
@@ -1248,18 +1406,26 @@ export default function Home() {
         />
       )}
 
-      {showReview && (
+      {showReview && policy.facts && (
         <ReviewDialog
           plan={plan}
           draft={draft}
+          draftId={draftId}
           scope={policy.scope}
+          facts={policy.facts}
           safe={safe}
           wallet={wallet}
           submitVia={submitVia}
           verification={verification}
           canSubmit={canSubmit}
+          recheckBaseline={policy.recheckBaseline}
+          markSubmitted={policy.markSubmitted}
           onClose={() => setShowReview(false)}
-          onSubmitted={() => void policy.reload()}
+          onBaselineChanged={(reason) => {
+            setShowReview(false);
+            setBaselineNotice(reason);
+          }}
+          onSubmitted={() => setBaselineNotice("submitted")}
         />
       )}
     </main>
@@ -1920,10 +2086,11 @@ function AllowanceEditor({
 
 type ProposalRow = {
   id: string;
-  safeTxHash: string;
+  safeAddress: string;
+  submission: SubmissionResult;
   callCount: number;
   risk: string;
-  proposedBy: string | null;
+  proposedBy: string;
   createdAt: number;
 };
 
@@ -1943,7 +2110,13 @@ function ActivityPanel({ chainId, rolesMod }: { chainId: number; rolesMod: strin
           error?: string;
         };
         if (cancelled) return;
-        if (body.error) setError(body.error);
+        if (!response.ok || body.error) {
+          setError(
+            response.status === 401
+              ? "Sign in to view proposal history."
+              : (body.error ?? `Could not load history (${response.status}).`),
+          );
+        }
         else setRows(body.proposals ?? []);
       } catch {
         if (!cancelled) setError("Could not load proposal history.");
@@ -1958,18 +2131,26 @@ function ActivityPanel({ chainId, rolesMod }: { chainId: number; rolesMod: strin
     <section className="single-panel">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">Audit trail</span>
+          <span className="eyebrow">Console record</span>
           <h3>Proposals from this console</h3>
           <p>
-            Recorded per modifier, so history survives role renames. Execution status lives
-            in the Safe.
+            Recorded per modifier, so history survives role renames. This is not
+            cryptographic proof; verify execution status in the Safe or onchain.
           </p>
         </div>
       </div>
       <div className="timeline">
         {error && <p className="inline-empty">{error}</p>}
         {rows?.map((row) => {
-          const url = safeTransactionUrl(chainId, rolesMod, row.safeTxHash);
+          const url =
+            row.submission.kind === "safeTxHash"
+              ? safeTransactionUrl(
+                  chainId,
+                  row.safeAddress,
+                  row.submission.safeTxHash,
+                )
+              : null;
+          const references = submissionReferences(row.submission);
           return (
             <div className="timeline-item" key={row.id}>
               <span className="change-glyph updated">~</span>
@@ -1979,9 +2160,11 @@ function ActivityPanel({ chainId, rolesMod }: { chainId: number; rolesMod: strin
                 </b>
                 <span>
                   {new Date(row.createdAt).toLocaleString()}
-                  {row.proposedBy ? ` · by ${shortHex(row.proposedBy)}` : ""}
+                  {row.proposedBy ? ` · by ${row.proposedBy.slice(0, 160)}` : ""}
                 </span>
-                <code>{shortHex(row.safeTxHash, 12, 10)}</code>
+                {references.map((reference) => (
+                  <code key={reference}>{shortHex(reference, 12, 10)}</code>
+                ))}
               </div>
               <span className={`risk-badge ${row.risk.toLowerCase()}`}>{row.risk}</span>
               {url && (
@@ -2007,6 +2190,7 @@ function ActivityPanel({ chainId, rolesMod }: { chainId: number; rolesMod: strin
 
 function ScopePicker({
   safe,
+  wallet,
   mods,
   modsLoading,
   modsError,
@@ -2014,6 +2198,7 @@ function ScopePicker({
   onSetUp,
 }: {
   safe: ReturnType<typeof useSafe>;
+  wallet: ReturnType<typeof useWallet>;
   mods: { address: string; chainId: number; owner: string; avatar: string }[];
   modsLoading: boolean;
   modsError: string | null;
@@ -2103,9 +2288,30 @@ function ScopePicker({
         <p>
           {safe.mode === "safe-app"
             ? "Enter the modifier address to manage."
-            : "Inspect any modifier's live policy and plan a diff. To submit changes, connect a Safe-aware wallet with the owning Safe selected, or open SafeRoles as a Safe App."}
+            : "Inspect any modifier's indexed policy snapshot and plan a diff. To submit changes, connect a Safe-aware wallet with the owning Safe selected, or open SafeRoles as a Safe App."}
         </p>
         <ScopeForm onSelect={onSelect} />
+        {safe.mode !== "safe-app" && wallet.status !== "connected" && (
+          <button
+            className="button secondary"
+            onClick={() => void wallet.connect()}
+            disabled={
+              wallet.status === "connecting" || wallet.status === "unavailable"
+            }
+          >
+            {wallet.status === "connecting"
+              ? "Connecting…"
+              : wallet.status === "unavailable"
+                ? "No wallet found"
+                : "Connect Safe-aware wallet"}
+          </button>
+        )}
+        {wallet.error && <p className="error-text">{wallet.error}</p>}
+        {onSetUp && safe.mode !== "safe-app" && (
+          <button className="button ghost" onClick={onSetUp}>
+            Deploy a Roles modifier
+          </button>
+        )}
         {safe.mode === "safe-app" && (
           <button className="button ghost" onClick={() => setManual(false)}>
             Back to discovered modifiers
@@ -2239,7 +2445,9 @@ function DraftsDialog({
                   </b>
                   <small>
                     {new Date(summary.updatedAt).toLocaleString()}
-                    {summary.createdBy ? ` · ${shortHex(summary.createdBy)}` : ""}
+                    {summary.createdBy
+                      ? ` · ${summary.createdBy.slice(0, 160)}`
+                      : ""}
                     {stale ? " · based on older state" : ""}
                   </small>
                 </span>
@@ -2250,7 +2458,7 @@ function DraftsDialog({
                   <button
                     className="row-remove"
                     aria-label={`Delete ${summary.name}`}
-                    onClick={() => void drafts.remove(summary.id)}
+                    onClick={() => void drafts.remove(summary)}
                   >
                     ×
                   </button>
@@ -2303,293 +2511,6 @@ function ScopeDialog({
             Deploy a new Roles modifier instead
           </button>
         )}
-      </section>
-    </div>
-  );
-}
-
-/* ========================================================================== */
-/*                              Review & propose                              */
-/* ========================================================================== */
-
-function ReviewDialog({
-  plan,
-  draft,
-  scope,
-  safe,
-  wallet,
-  submitVia,
-  verification,
-  canSubmit,
-  onClose,
-  onSubmitted,
-}: {
-  plan: ReturnType<typeof usePolicy>["plan"];
-  draft: DraftPolicy;
-  scope: Scope;
-  safe: ReturnType<typeof useSafe>;
-  wallet: ReturnType<typeof useWallet>;
-  submitVia: "safe-app" | "wallet" | "none";
-  verification: { ok: boolean; problems: string[] };
-  canSubmit: boolean;
-  onClose: () => void;
-  onSubmitted: () => void;
-}) {
-  const [state, setState] = useState<"idle" | "submitting" | "done" | "error">("idle");
-  const [message, setMessage] = useState<string | null>(null);
-  const [reference, setReference] = useState<string | null>(null);
-
-  const critical = plan.risk === "Critical";
-  const submitter = submitVia === "wallet" ? wallet.account : safe.info?.safeAddress;
-  // Not dismissable mid-submission: the wallet may already be applying calls.
-  useDismissOnEscape(state === "submitting" ? () => {} : onClose);
-
-  async function submit() {
-    setState("submitting");
-    setMessage(null);
-    const payload = plan.transactions.map((transaction) => ({
-      to: transaction.to,
-      value: transaction.value,
-      data: transaction.data,
-    }));
-
-    try {
-      const id =
-        submitVia === "wallet" ? await wallet.send(payload) : await safe.propose(payload);
-      setReference(id);
-      setState("done");
-
-      // Record the reviewed diff. Best-effort: the transaction is already
-      // submitted, so a storage failure must not read as a submission failure.
-      try {
-        await fetch("/api/proposals", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            chainId: scope.chainId,
-            rolesMod: scope.rolesMod,
-            safeAddress: submitter,
-            safeTxHash: id,
-            risk: plan.risk,
-            calls: plan.calls,
-            proposedBy: submitter,
-          }),
-        });
-      } catch {
-        setMessage("Submitted, but the local history record could not be saved.");
-      }
-      onSubmitted();
-    } catch (error) {
-      setState("error");
-      setMessage(error instanceof Error ? error.message : "Nothing was submitted.");
-    }
-  }
-
-  function exportPolicy() {
-    const payload = {
-      schema: "saferoles/policy@2",
-      chainId: scope.chainId,
-      rolesMod: scope.rolesMod,
-      generatedAt: new Date().toISOString(),
-      policy: draft,
-      plannedCalls: plan.calls,
-    };
-    const blob = new Blob(
-      [
-        JSON.stringify(
-          payload,
-          (_key, value) => (typeof value === "bigint" ? value.toString() : value),
-          2,
-        ),
-      ],
-      { type: "application/json" },
-    );
-    const href = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = href;
-    anchor.download = `roles-policy-${scope.rolesMod.slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(href);
-  }
-
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <section
-        className="modal review-modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="review-title"
-      >
-        <div className="modal-heading">
-          <div>
-            <span className="eyebrow">Pre-flight review</span>
-            <h2 id="review-title">Planned changes</h2>
-            <p>
-              Diffed against the modifier&apos;s live configuration. This is exactly what will
-              be proposed.
-            </p>
-          </div>
-          <button className="icon-button" aria-label="Close" onClick={onClose}>×</button>
-        </div>
-
-        <div className="review-summary">
-          <div>
-            <span>Onchain calls</span>
-            <strong>{plan.transactions.length}</strong>
-          </div>
-          <div>
-            <span>Roles touched</span>
-            <strong>{new Set(plan.changes.map((change) => change.scope)).size}</strong>
-          </div>
-          <div>
-            <span>Highest risk</span>
-            <strong className={`risk-text ${plan.risk.toLowerCase()}`}>{plan.risk}</strong>
-          </div>
-          <div>
-            <span>Problems</span>
-            <strong className={plan.issues.length ? "risk-text high" : ""}>
-              {plan.issues.length}
-            </strong>
-          </div>
-        </div>
-
-        {plan.issues.length > 0 && (
-          <div className="validation-issues" role="alert">
-            <b>Fix these before a diff can be computed</b>
-            <p className="issues-note">
-              While any value is invalid its role cannot be encoded, and an unencodable role
-              would look like a request to revoke everything in it. Nothing is planned until
-              these are resolved.
-            </p>
-            <ul>
-              {plan.issues.map((issue, index) => (
-                <li key={`${issue.message}-${index}`}>{issue.message}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {plan.issues.length === 0 && (
-          <div className="review-list">
-            {plan.changes.map((change) => (
-              <div className="review-row" key={change.id}>
-                <span
-                  className={`change-glyph ${
-                    change.action === "Revoke" ? "removed" : change.action === "Grant" ? "added" : "updated"
-                  }`}
-                >
-                  {change.action === "Revoke" ? "−" : change.action === "Grant" ? "+" : "~"}
-                </span>
-                <span>
-                  <b>{change.summary}</b>
-                  <small>
-                    {change.scope} · {change.detail}
-                  </small>
-                  {change.rationale && <small className="rationale">{change.rationale}</small>}
-                </span>
-                <span className={`risk-badge ${change.risk.toLowerCase()}`}>{change.risk}</span>
-              </div>
-            ))}
-            {plan.changes.length === 0 && (
-              <p className="inline-empty">
-                The draft matches the live configuration. Nothing to propose.
-              </p>
-            )}
-          </div>
-        )}
-
-        {critical && (
-          <div className="guardrail-callout critical">
-            <b>Critical change blocked</b>
-            <p>
-              This batch enables delegatecall, which lets the target run code against the
-              Safe&apos;s own storage and balances. Remove it, or configure it in the Zodiac
-              Roles app where that risk is presented in full.
-            </p>
-          </div>
-        )}
-
-        {!verification.ok && (
-          <div className="validation-issues" role="alert">
-            <b>This Safe cannot govern this modifier</b>
-            <ul>
-              {verification.problems.map((problem) => (
-                <li key={problem}>{problem}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        {submitVia === "safe-app" && safe.info?.isReadOnly && (
-          <div className="banner info">
-            <b>Read-only Safe session</b>
-            <p>The Safe UI reports no signer, so a proposal cannot be submitted.</p>
-          </div>
-        )}
-
-        {submitVia === "wallet" && wallet.batchSupport === "sequential" && (
-          <div className="guardrail-callout medium">
-            <b>
-              {plan.transactions.length} separate confirmation
-              {plan.transactions.length === 1 ? "" : "s"}
-            </b>
-            <p>
-              This wallet cannot submit an atomic batch, so each call is confirmed and
-              applied on its own. Stopping partway leaves the policy partially updated.
-            </p>
-          </div>
-        )}
-
-        {state === "done" && reference && (
-          <div className="proposal-success">
-            <span>✓</span>
-            <p>
-              <b>
-                {submitVia === "wallet"
-                  ? "Submitted through your wallet"
-                  : "Queued in the Safe"}
-              </b>
-              <code>{shortHex(reference, 14, 12)}</code>
-            </p>
-            {submitter && safeTransactionUrl(scope.chainId, submitter, reference) && (
-              <a
-                className="button secondary"
-                href={safeTransactionUrl(scope.chainId, submitter, reference) ?? "#"}
-                target="_blank"
-                rel="noreferrer"
-              >
-                View in Safe ↗
-              </a>
-            )}
-          </div>
-        )}
-
-        {message && (
-          <div className={state === "error" ? "connection-error" : "banner info"} role="alert">
-            <b>{state === "error" ? "Not submitted" : "Note"}</b>
-            <p>{message}</p>
-          </div>
-        )}
-
-        <div className="modal-actions">
-          <button onClick={onClose}>Back to editing</button>
-          <button className="button secondary" onClick={exportPolicy}>
-            Export JSON
-          </button>
-          <button
-            className="button primary"
-            onClick={submit}
-            disabled={!canSubmit || critical || state === "submitting" || state === "done"}
-          >
-            {state === "submitting"
-              ? "Submitting…"
-              : state === "done"
-                ? "Submitted"
-                : submitVia === "none"
-                  ? "Connect a wallet or open in Safe"
-                  : `${submitVia === "wallet" ? "Submit" : "Propose"} ${plan.transactions.length} call${plan.transactions.length === 1 ? "" : "s"}`}
-          </button>
-        </div>
       </section>
     </div>
   );
