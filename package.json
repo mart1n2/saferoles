@@ -9,18 +9,26 @@
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "tsx --test tests/roles-transactions.test.ts && npm run build && node --test tests/rendered-html.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "test:unit": "tsx --test \"tests/*.test.ts\"",
+    "test:rendered": "node --test tests/rendered-html.test.mjs",
+    "test": "npm run test:unit && npm run build && npm run test:rendered",
+    "db:generate": "tsx scripts/generate-sql.ts",
+    "icons": "tsx scripts/generate-icons.ts",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern work"
   },
   "dependencies": {
+    "@gnosis-guild/zodiac-core": "^4.3.0",
     "@safe-global/api-kit": "^5.0.1",
     "@safe-global/protocol-kit": "^8.0.4",
+    "@safe-global/safe-apps-sdk": "^9.1.0",
     "@safe-global/types-kit": "^4.0.1",
     "buffer": "^6.0.3",
+    "drizzle-orm": "^0.45.2",
     "ethers": "^6.15.0",
     "next": "^16.2.12",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "zodiac-roles-sdk": "^3.4.8"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.48.0",
@@ -30,6 +38,7 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
+    "drizzle-kit": "^0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "react-server-dom-webpack": "^19.2.8",

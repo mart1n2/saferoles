@@ -28,8 +28,15 @@ export async function generateMetadata(): Promise<Metadata> {
     title,
     description,
     icons: {
-      icon: "/favicon.svg",
-      shortcut: "/favicon.svg",
+      // SVG first for crisp scaling; PNGs cover Safari and the surfaces that do
+      // not accept an SVG favicon.
+      icon: [
+        { url: "/favicon.svg", type: "image/svg+xml" },
+        { url: "/favicon-32.png", sizes: "32x32", type: "image/png" },
+        { url: "/favicon-192.png", sizes: "192x192", type: "image/png" },
+      ],
+      shortcut: "/favicon-32.png",
+      apple: "/apple-touch-icon.png",
     },
     openGraph: {
       title,
