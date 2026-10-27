@@ -1,4 +1,3 @@
-"use client";
 
 /**
  * Safe App host integration.
@@ -14,6 +13,7 @@
 import { Interface, getAddress, isAddress } from "ethers";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SubmissionResult } from "./submission";
+import { parseHostTransaction, type SafeTransactionStatus } from "./safe-transaction-status";
 
 export type SafeHostInfo = {
   safeAddress: string;
@@ -35,7 +35,10 @@ export type SafeTransaction = {
 
 type Sdk = {
   safe: { getInfo(): Promise<SafeHostInfo> };
-  txs: { send(input: { txs: SafeTransaction[] }): Promise<{ safeTxHash: string }> };
+  txs: {
+    send(input: { txs: SafeTransaction[] }): Promise<{ safeTxHash: string }>;
+    getBySafeTxHash(safeTxHash: string): Promise<unknown>;
+  };
   /** RPC proxied through the Safe host, so no separate provider is needed. */
   eth: {
     getCode(params: [string]): Promise<string>;
@@ -51,6 +54,7 @@ const safeInterface = new Interface([
 ]);
 
 export type SafeContext = {
+  transactionStatus: (safeTxHash: string, chainId: number, safeAddress: string) => Promise<SafeTransactionStatus>;
   mode: SafeMode;
   info: SafeHostInfo | null;
   error: string | null;
@@ -58,6 +62,7 @@ export type SafeContext = {
   propose: (transactions: SafeTransaction[]) => Promise<SubmissionResult>;
   /** Reads bytecode at an address, or null when no provider is available. */
   getCode: (address: string) => Promise<string | null>;
+  readContract: (to: string, data: string) => Promise<string | null>;
   /** Reads module enablement directly from the open Safe. Null means unknown. */
   isModuleEnabled: (moduleAddress: string) => Promise<boolean | null>;
 };
@@ -124,6 +129,16 @@ export function useSafe(): SafeContext {
     return { kind: "safeTxHash", safeTxHash };
   }, []);
 
+  const transactionStatus = useCallback<SafeContext["transactionStatus"]>(async (safeTxHash, chainId, safeAddress) => {
+    const sdk = sdkRef.current;
+    if (!sdk || info?.chainId !== chainId || info.safeAddress.toLowerCase() !== safeAddress.toLowerCase()) throw new Error("Open the matching Safe and network to synchronize this transaction.");
+    const result = await Promise.race([
+      sdk.txs.getBySafeTxHash(safeTxHash),
+      new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error("Safe status request timed out.")),10_000)),
+    ]);
+    return parseHostTransaction(result,{safeAddress,safeTxHash});
+  },[info]);
+
   const getCode = useCallback(async (address: string) => {
     const sdk = sdkRef.current;
     if (!sdk) return null;
@@ -132,6 +147,11 @@ export function useSafe(): SafeContext {
     } catch {
       return null;
     }
+  }, []);
+
+  const readContract = useCallback(async (to: string, data: string) => {
+    try { return await sdkRef.current?.eth.call([{ to, data }]) ?? null; }
+    catch { return null; }
   }, []);
 
   const isModuleEnabled = useCallback(async (moduleAddress: string) => {
@@ -156,8 +176,8 @@ export function useSafe(): SafeContext {
   }, [info?.safeAddress]);
 
   return useMemo(
-    () => ({ mode, info, error, propose, getCode, isModuleEnabled }),
-    [mode, info, error, propose, getCode, isModuleEnabled],
+    () => ({ mode, info, error, propose, getCode, readContract, isModuleEnabled, transactionStatus }),
+    [mode, info, error, propose, getCode, readContract, isModuleEnabled, transactionStatus],
   );
 }
 

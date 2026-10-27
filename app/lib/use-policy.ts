@@ -1,4 +1,3 @@
-"use client";
 
 /**
  * Policy state: load the indexer's configuration snapshot, edit a draft of it,
@@ -9,12 +8,22 @@
  * so what a reviewer reads and what gets signed are the same object. There is
  * no separate edit log.
  */
+import { discoverOnChain, mergeMods, readUnindexedModifier } from "./onchain-mods";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RolesModifier } from "zodiac-roles-sdk";
-import { fromRolesMod, toSdkState, type SdkState } from "./policy-codec";
+import { fromRolesMod, isBlankPermission, lockDeployedRoleKeys, toSdkState, type SdkState } from "./policy-codec";
 import { buildPlan, type Plan } from "./policy-plan";
 import type { DraftPolicy } from "./policy";
-import { revive } from "./serialize";
+import { browserRolesReader } from "./browser-data";
+import {
+  clearSavedForm,
+  formKeys,
+  isRecoveredPolicyChange,
+  parsePolicyWorkingCopy,
+  readSavedForm,
+  writeSavedForm,
+  type PolicyWorkingCopy,
+} from "./form-drafts";
 
 export type Scope = { chainId: number; rolesMod: string };
 
@@ -44,22 +53,6 @@ export type BaselineCheck =
       previousHash: string;
       currentHash: string;
     };
-
-async function readJson<T>(response: Response): Promise<T> {
-  const text = await response.text();
-  if (!text) throw new Error(`Empty response (${response.status}).`);
-  // BigInt-tagged values are revived so allowance amounts stay exact.
-  return revive<T>(JSON.parse(text));
-}
-
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  const body = await readJson<T & { error?: string }>(response);
-  if (!response.ok || body.error) {
-    throw new Error(body.error ?? `Request failed (${response.status}).`);
-  }
-  return body;
-}
 
 function assertModifierAddress(mod: RolesModifier, expected: string): void {
   if (
@@ -106,6 +99,17 @@ export type PolicyState = {
   discard: () => void;
   applyDraft: (policy: DraftPolicy) => void;
   /**
+   * Unsaved edits restored from this browser. They are diffs against the
+   * freshly indexed baseline, never a stored chain state.
+   */
+  recovered: { savedAt: number; baseHash: string | null } | null;
+  /** Hides the recovery notice while keeping the restored edits. */
+  dismissRecovered: () => void;
+  /** The modifier exists on chain but the indexer has not seen it: the baseline is empty and unverified. */
+  unindexed: boolean;
+  /** When the current unsaved edits were last written locally. */
+  autosavedAt: number | null;
+  /**
    * Re-fetches the indexed state immediately before submission. A changed
    * baseline is installed so React rebuilds the review plan, but never submitted
    * in the same click.
@@ -132,6 +136,15 @@ export function usePolicy(): PolicyState {
   const [baseHash, setBaseHash] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftPolicy | null>(null);
   const [pristine, setPristine] = useState<string | null>(null);
+  const [recovered, setRecovered] = useState<{
+    savedAt: number;
+    baseHash: string | null;
+  } | null>(null);
+  const [unindexed, setUnindexed] = useState(false);
+  const [autosavedAt, setAutosavedAt] = useState<number | null>(null);
+  // A submission clears the working copy; an in-flight debounce must not write
+  // the submitted diff back, so the first manual edit re-enables autosave.
+  const skipAutosave = useRef(false);
 
   // Guards against a slow response for a scope the user has moved away from
   // overwriting the policy they are now looking at.
@@ -143,14 +156,19 @@ export function usePolicy(): PolicyState {
     const token = ++loadToken.current;
     if (!samePolicyScope(scopeRef.current, next)) submittedBaseHash.current = null;
     scopeRef.current = next;
+    skipAutosave.current = false;
+    setRecovered(null);
+    setAutosavedAt(null);
     setStatus("loading");
     setError(null);
     setScope(next);
 
     try {
-      const { mod } = await request<{ mod: RolesModifier }>(
-        `/api/rolesmod?chainId=${next.chainId}&address=${next.rolesMod}`,
-      );
+      const indexedMod = await browserRolesReader.read({chainId:next.chainId,address:next.rolesMod});
+      // A modifier deployed moments ago is on chain before the indexer sees it.
+      const mod = indexedMod ?? await readUnindexedModifier(next.rolesMod, next.chainId).catch(() => null);
+      if (!mod) throw new Error("No Roles modifier is indexed at this address.");
+      setUnindexed(!indexedMod);
       if (token !== loadToken.current) return;
       assertModifierAddress(mod, next.rolesMod);
 
@@ -170,11 +188,30 @@ export function usePolicy(): PolicyState {
         submittedBaseHash.current = null;
       }
 
+      // Unsaved edits are restored as a diff against the snapshot just read,
+      // not as a stored policy. They were saved automatically while editing and
+      // still go through review and the pre-submission baseline recheck.
+      const workingKey = formKeys.policy(next.chainId, next.rolesMod);
+      const saved = await readSavedForm<PolicyWorkingCopy>(workingKey, (value) =>
+        parsePolicyWorkingCopy(value, next),
+      );
+      if (token !== loadToken.current) return;
+      const restored =
+        saved && isRecoveredPolicyChange(saved.data, imported)
+          ? lockDeployedRoleKeys(saved.data.policy, chainState)
+          : null;
+      if (saved && !restored) void clearSavedForm(workingKey);
+
       setFacts(nextFacts);
       setCurrent(chainState);
       setBaseHash(hash);
-      setDraft(imported);
+      setDraft(restored ?? imported);
       setPristine(JSON.stringify(imported));
+      setRecovered(
+        restored && saved
+          ? { savedAt: saved.savedAt, baseHash: saved.data.baseHash }
+          : null,
+      );
       setStatus("loaded");
     } catch (caught) {
       if (token !== loadToken.current) return;
@@ -190,13 +227,19 @@ export function usePolicy(): PolicyState {
   }, [load, scope]);
 
   const update = useCallback((updater: (value: DraftPolicy) => DraftPolicy) => {
+    skipAutosave.current = false;
     setDraft((value) => (value ? updater(value) : value));
   }, []);
 
   const discard = useCallback(() => {
     if (!pristine) return;
+    skipAutosave.current = false;
     setDraft(JSON.parse(pristine) as DraftPolicy);
+    setRecovered(null);
+    setAutosavedAt(null);
   }, [pristine]);
+
+  const dismissRecovered = useCallback(() => setRecovered(null), []);
 
   const applyDraft = useCallback((policy: DraftPolicy) => {
     const active = scopeRef.current;
@@ -209,8 +252,10 @@ export function usePolicy(): PolicyState {
         "This draft belongs to a different chain or Roles modifier and cannot be opened here.",
       );
     }
-    setDraft(policy);
-  }, []);
+    skipAutosave.current = false;
+    setRecovered(null);
+    setDraft(current ? lockDeployedRoleKeys(policy, current) : policy);
+  }, [current]);
 
   const recheckBaseline = useCallback(async (): Promise<BaselineCheck> => {
     const active = scopeRef.current;
@@ -218,13 +263,11 @@ export function usePolicy(): PolicyState {
       throw new Error("The indexed policy baseline is not loaded.");
     }
 
-    // The nonce and no-store mode avoid browser/CDN reuse. This endpoint is
+    // No-store mode avoids browser/CDN reuse. This source is
     // indexer-backed, so after a submission we additionally require the
     // fingerprint to advance before accepting another proposal.
-    const { mod } = await request<{ mod: RolesModifier }>(
-      `/api/rolesmod?chainId=${active.chainId}&address=${active.rolesMod}&fresh=${Date.now()}`,
-      { cache: "no-store", headers: { "cache-control": "no-cache" } },
-    );
+    const mod = await browserRolesReader.read({chainId:active.chainId,address:active.rolesMod},{cache:"no-store"});
+    if (!mod) throw new Error("The Roles modifier is not indexed yet.");
     assertModifierAddress(mod, active.rolesMod);
     if (!samePolicyScope(scopeRef.current, active)) {
       throw new Error("The open modifier changed while its baseline was checked.");
@@ -256,6 +299,7 @@ export function usePolicy(): PolicyState {
       const imported = fromRolesMod(mod, active.chainId);
       setFacts(nextFacts);
       setCurrent(chainState);
+      setDraft(previous => previous ? lockDeployedRoleKeys(previous, chainState) : previous);
       setBaseHash(hash);
       setPristine(JSON.stringify(imported));
       setStatus("loaded");
@@ -272,7 +316,59 @@ export function usePolicy(): PolicyState {
 
   const markSubmitted = useCallback(() => {
     submittedBaseHash.current = baseHash;
+    skipAutosave.current = true;
+    setRecovered(null);
+    setAutosavedAt(null);
+    const active = scopeRef.current;
+    if (active) void clearSavedForm(formKeys.policy(active.chainId, active.rolesMod));
   }, [baseHash]);
+
+  const dirty = useMemo(
+    () => Boolean(draft && pristine && JSON.stringify(draft) !== pristine),
+    [draft, pristine],
+  );
+
+  const workingKey = scope ? formKeys.policy(scope.chainId, scope.rolesMod) : null;
+
+  // Debounced autosave of the current diff. Only changes are stored; the
+  // unmodified baseline never becomes a "recovered" edit.
+  useEffect(() => {
+    if (!workingKey || !draft || !dirty || status !== "loaded" || skipAutosave.current) return;
+    // Blank, never-started permissions are not worth recovering.
+    const savable: DraftPolicy = { ...draft, roles: draft.roles.map((role) => ({ ...role, permissions: role.permissions.filter((permission) => !isBlankPermission(permission)) })) };
+    if (JSON.stringify(savable) === pristine) {
+      void clearSavedForm(workingKey);
+      return;
+    }
+    const value: PolicyWorkingCopy = { policy: savable, baseHash };
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void writeSavedForm(workingKey, value)
+        .then((savedAt) => {
+          if (!cancelled) setAutosavedAt(savedAt);
+        })
+        .catch(() => {
+          if (!cancelled) setAutosavedAt(null);
+        });
+    }, 500);
+    // A reload or tab close can happen inside the debounce window; try to keep
+    // the last keystrokes instead of silently losing them.
+    const flush = () => {
+      void writeSavedForm(workingKey, value).catch(() => {});
+    };
+    window.addEventListener("pagehide", flush);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [workingKey, draft, dirty, status, baseHash, pristine]);
+
+  // Discarding or reverting the edits leaves nothing to recover.
+  useEffect(() => {
+    if (!workingKey || status !== "loaded" || dirty) return;
+    void clearSavedForm(workingKey);
+  }, [workingKey, status, dirty]);
 
   const plan = useMemo<Plan>(() => {
     if (!draft || !current || !scope) return idlePlan;
@@ -284,11 +380,6 @@ export function usePolicy(): PolicyState {
       issues,
     });
   }, [draft, current, scope]);
-
-  const dirty = useMemo(
-    () => Boolean(draft && pristine && JSON.stringify(draft) !== pristine),
-    [draft, pristine],
-  );
 
   return {
     status,
@@ -305,6 +396,10 @@ export function usePolicy(): PolicyState {
     setDraft: update,
     discard,
     applyDraft,
+    recovered,
+    dismissRecovered,
+    unindexed,
+    autosavedAt: dirty ? autosavedAt : null,
     recheckBaseline,
     markSubmitted,
   };
@@ -319,42 +414,37 @@ export function useDiscoveredMods(
   loading: boolean;
   error: string | null;
 } {
-  const [mods, setMods] = useState<
-    { address: string; chainId: number; owner: string; avatar: string }[]
-  >([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  type DiscoveredMod = { address: string; chainId: number; owner: string; avatar: string };
+  const identity = safeAddress && chainId !== null ? `${chainId}:${safeAddress.toLowerCase()}` : null;
+  const [result, setResult] = useState<{ identity: string | null; mods: DiscoveredMod[]; loading: boolean; error: string | null }>({ identity: null, mods: [], loading: false, error: null });
 
   useEffect(() => {
     if (!safeAddress || chainId === null) return;
     let cancelled = false;
 
     void (async () => {
-      setLoading(true);
-      setError(null);
+      setResult({ identity, mods: [], loading: true, error: null });
       try {
-        const body = await request<{
-          mods: { address: string; chainId: number; owner: string; avatar: string }[];
-        }>(`/api/rolesmods?avatar=${safeAddress}&chainId=${chainId}`);
-        if (!cancelled) setMods(body.mods);
+        // The indexer can lag a fresh deployment, so also read the Safe's own modules.
+        const [indexed, onChain] = await Promise.allSettled([browserRolesReader.discover(safeAddress), discoverOnChain(safeAddress, chainId)]);
+        if (indexed.status === "rejected" && onChain.status === "rejected") throw indexed.reason;
+        const mods = mergeMods(indexed.status === "fulfilled" ? indexed.value : [], onChain.status === "fulfilled" ? onChain.value : []);
+        mods.sort((a,b)=>Number(b.chainId===chainId)-Number(a.chainId===chainId) || a.chainId-b.chainId);
+        if (!cancelled) setResult({identity,mods,loading:false,error:null});
       } catch (caught) {
         if (!cancelled) {
-          setError(
-            caught instanceof Error ? caught.message : "Could not list modifiers.",
-          );
+          setResult({ identity, mods: [], loading: false, error: caught instanceof Error ? caught.message : "Could not list modifiers." });
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [safeAddress, chainId]);
+  }, [safeAddress, chainId, identity]);
 
-  // Derived rather than cleared in the effect, so results for a previous Safe
-  // can never be shown against a different one.
-  const scoped = safeAddress && chainId !== null ? mods : [];
-  return { mods: scoped, loading, error };
+  // Never show a previous Safe's response while a new lookup starts.
+  return result.identity === identity
+    ? result
+    : { mods: [], loading: identity !== null, error: null };
 }

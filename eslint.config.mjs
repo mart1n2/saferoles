@@ -1,18 +1,7 @@
-import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
-
-const eslintConfig = defineConfig([
-  ...nextVitals,
-  ...nextTs,
-  // Override default ignores of eslint-config-next.
-  globalIgnores([
-    // Generated output only. `build/` contains the checked-in Sites packaging
-    // plugin, so it must remain inside the lint surface.
-    ".next/**",
-    "out/**",
-    "next-env.d.ts",
-  ]),
-]);
-
-export default eslintConfig;
+import tseslint from "typescript-eslint";
+import hooks from "eslint-plugin-react-hooks";
+export default tseslint.config(
+  {ignores:["dist/**",".next/**",".vinext/**","node_modules/**",".wrangler/**","work/**","outputs/**"]},
+  ...tseslint.configs.recommended,
+  {files:["app/**/*.ts","app/**/*.tsx"],plugins:{"react-hooks":hooks},rules:hooks.configs.flat.recommended.rules},
+);

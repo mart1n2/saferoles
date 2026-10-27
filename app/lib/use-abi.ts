@@ -1,4 +1,3 @@
-"use client";
 
 /**
  * Client access to contract ABIs and selector names.
@@ -11,7 +10,10 @@
  *    enough to label a whole imported policy without a lookup per target.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ResolvedAbi } from "./abi-source";
+import { lookupSelectors, type ResolvedAbi } from "./abi-source";
+import { readBrowserAbi, saveBrowserAbi, forgetBrowserAbi } from "./browser-data";
+import { useSyncExternalStore } from "react";
+import { subscribeApiKeys, apiKeysRevision, serverApiKeysRevision } from "./api-keys";
 
 const abiCache = new Map<string, ResolvedAbi | null>();
 const selectorCache = new Map<string, string[]>();
@@ -36,9 +38,10 @@ export type AbiState = {
 const LOOKUP_DEBOUNCE_MS = 400;
 
 export function useAbi(chainId: number | null, address: string): AbiState {
+  const keysRevision=useSyncExternalStore(subscribeApiKeys,apiKeysRevision,serverApiKeysRevision);
   const trimmed = address.trim();
   const enabled = chainId !== null && /^0x[0-9a-fA-F]{40}$/.test(trimmed);
-  const key = enabled ? cacheKey(chainId, trimmed) : null;
+  const key = enabled ? `${cacheKey(chainId, trimmed)}:${keysRevision}` : null;
 
   const [status, setStatus] = useState<AbiStatus>("idle");
   const [abi, setAbi] = useState<ResolvedAbi | null>(null);
@@ -75,15 +78,7 @@ export function useAbi(chainId: number | null, address: string): AbiState {
       setStatus("loading");
       void (async () => {
         try {
-          const response = await fetch(
-            `/api/abi?chainId=${chainId}&address=${trimmed}`,
-            { signal: controller.signal },
-          );
-          const body = (await response.json()) as {
-            abi?: ResolvedAbi | null;
-            reason?: string;
-            error?: string;
-          };
+          const body = {abi:await readBrowserAbi(chainId,trimmed,controller.signal),error:undefined,reason:"No verified ABI available. Paste an ABI to continue."};
           if (token !== requestId.current) return;
 
           if (body.error) {
@@ -114,15 +109,7 @@ export function useAbi(chainId: number | null, address: string): AbiState {
   const saveManual = useCallback(
     async (input: string, name?: string) => {
       if (chainId === null || !key) throw new Error("Enter the contract address first.");
-      const response = await fetch("/api/abi", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chainId, address: trimmed, abi: input, name }),
-      });
-      const body = (await response.json()) as { abi?: ResolvedAbi; error?: string };
-      if (!response.ok || body.error || !body.abi) {
-        throw new Error(body.error ?? "That ABI could not be stored.");
-      }
+      const body = {abi:await saveBrowserAbi(chainId,trimmed,input,name)};
       abiCache.set(key, body.abi);
       // Newly named functions may resolve selectors elsewhere in the policy.
       for (const entry of body.abi.functions) {
@@ -137,7 +124,7 @@ export function useAbi(chainId: number | null, address: string): AbiState {
 
   const forget = useCallback(async () => {
     if (chainId === null || !key) return;
-    await fetch(`/api/abi?chainId=${chainId}&address=${trimmed}`, { method: "DELETE" });
+    await forgetBrowserAbi(chainId,trimmed);
     abiCache.delete(key);
     setAbi(null);
     setReason(null);
@@ -193,13 +180,7 @@ export function useSelectorNames(selectors: readonly string[]): Record<string, s
         if (wanted.length === 0) return;
 
         try {
-          const response = await fetch(
-            `/api/selectors?list=${wanted.slice(0, 200).join(",")}`,
-            { signal: controller.signal },
-          );
-          const body = (await response.json()) as {
-            signatures?: Record<string, string[]>;
-          };
+          const body = {signatures:await lookupSelectors(wanted.slice(0,200),controller.signal)};
           for (const selector of wanted) {
             selectorCache.set(selector, body.signatures?.[selector] ?? []);
           }
@@ -273,16 +254,13 @@ export function useFunctionNames(
         if (wanted.length === 0) return;
 
         try {
-          const response = await fetch("/api/abis", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ chainId, addresses: wanted }),
-            signal: controller.signal,
-          });
-          const body = (await response.json()) as {
-            functions?: Record<string, Record<string, string>>;
-          };
-          const fetched = body.functions ?? {};
+          const fetched:Record<string,Record<string,string>>={};
+          // Limit public source concurrency and keep readable raw signatures on failure.
+          for(const address of wanted.slice(0,100)) {
+            if(controller.signal.aborted)return;
+            const abi=await readBrowserAbi(chainId,address,controller.signal);
+            if(abi)fetched[address]=Object.fromEntries(abi.functions.map(fn=>[fn.selector.toLowerCase(),fn.readable]));
+          }
           for (const address of wanted) {
             // Cached either way, so an unresolvable target is not retried.
             namesCache.set(`${chainId}:${address}`, fetched[address] ?? {});

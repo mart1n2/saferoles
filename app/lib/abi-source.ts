@@ -1,8 +1,8 @@
 /**
  * Contract ABI resolution.
  *
- * Runs server-side so lookups work from inside the Safe App iframe regardless of
- * each provider's CORS policy, and so an API key never reaches the browser.
+ * Runs in the browser. Provider CORS failures fall back to manual ABI entry.
+ * Optional user-provided API keys are sent only to their fixed provider endpoint.
  *
  * Order of preference:
  *  1. Sourcify — multi-chain, no API key, and it reports proxy implementations.
@@ -13,7 +13,7 @@
  * detected the implementation ABI is fetched and merged in.
  */
 import { Fragment, FunctionFragment, Interface, getAddress } from "ethers";
-import { runtimeVar } from "./runtime-env";
+
 
 export type AbiSource = "sourcify" | "etherscan" | "manual";
 
@@ -257,12 +257,12 @@ async function fromEtherscan(
   chainId: number,
   address: string,
   signal?: AbortSignal,
+  key?: string,
 ): Promise<ResolvedAbi | null> {
-  const key = runtimeVar("ETHERSCAN_API_KEY");
   if (!key) return null;
 
-  const url = `${ETHERSCAN}?chainid=${chainId}&module=contract&action=getabi&address=${address}&apikey=${key}`;
-  const response = await fetch(url, { signal, headers: { accept: "application/json" } });
+  const url = `${ETHERSCAN}?chainid=${chainId}&module=contract&action=getabi&address=${address}&apikey=${encodeURIComponent(key)}`;
+  const response = await fetch(url, { signal, headers: { accept: "application/json" }, redirect:"error", referrerPolicy:"no-referrer" });
   if (!response.ok) return null;
   const body = (await response.json()) as { status?: string; result?: string };
   if (body.status !== "1" || !body.result) return null;
@@ -296,8 +296,9 @@ export async function resolveAbi(
   chainId: number,
   address: string,
   signal?: AbortSignal,
+  apiKey?: string,
 ): Promise<ResolvedAbi | null> {
-  for (const attempt of [fromSourcify, fromEtherscan]) {
+  for (const attempt of [fromSourcify, (chain:number,target:string,abort?:AbortSignal)=>fromEtherscan(chain,target,abort,apiKey)]) {
     try {
       const resolved = await attempt(chainId, address, signal);
       if (resolved && resolved.functions.length > 0) return resolved;

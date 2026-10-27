@@ -96,6 +96,10 @@ function validateOperatorAgainstType(
  * @throws with a human-readable message; callers convert it into a
  *         {@link PolicyIssue} against this permission.
  */
+export function isBlankPermission(permission: DraftPermission): boolean {
+  return !permission.targetAddress.trim() && !permission.signature.trim() && !permission.selector && !permission.name.trim() && !permission.rawCondition && permission.conditions.length === 0;
+}
+
 function toPermission(permission: DraftPermission): Permission {
   // Validated, not merely cast: a mistyped or truncated target would otherwise
   // reach the encoder and grant permission on the wrong contract. `isAddress`
@@ -227,6 +231,18 @@ export type SdkState = {
   allowances: SdkAllowance[];
 };
 
+/** Reattach key locks when opening older drafts that predate identity metadata. */
+export function lockDeployedRoleKeys(policy: DraftPolicy, current: SdkState): DraftPolicy {
+  const keys = new Set(current.roles.map(role => role.key.toLowerCase()));
+  return { ...policy, roles: policy.roles.map(role => {
+    if (role.deployedKey) return role;
+    try {
+      const key = encodeKey(role.key.trim());
+      return keys.has(key.toLowerCase()) ? { ...role, deployedKey: key } : role;
+    } catch { return role; } // Invalid drafts remain editable and are blocked by validation.
+  }) };
+}
+
 /**
  * Maps the whole draft policy into SDK state, collecting every validation
  * problem instead of failing on the first one, so the review screen can show
@@ -259,6 +275,9 @@ export function toSdkState(policy: DraftPolicy): {
     }
     try {
       key = encodeKey(trimmedKey);
+      if (role.deployedKey && key.toLowerCase() !== role.deployedKey.toLowerCase()) {
+        roleIssues.push({ roleId: role.id, message: "The deployed role key is locked. Create a new role to use a different key." });
+      }
     } catch (error) {
       roleIssues.push({
         roleId: role.id,
@@ -290,6 +309,8 @@ export function toSdkState(policy: DraftPolicy): {
 
     const permissions: Permission[] = [];
     for (const permission of role.permissions) {
+      // A permission nobody has started filling in is not a request.
+      if (isBlankPermission(permission)) continue;
       try {
         permissions.push(toPermission(permission));
       } catch (error) {
@@ -488,6 +509,7 @@ export function fromRolesMod(mod: RolesModifier, chainId: number): DraftPolicy {
     return {
       id: localId("role"),
       key,
+      deployedKey: role.key,
       name: key,
       description: "",
       annotations: role.annotations,

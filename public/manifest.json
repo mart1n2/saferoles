@@ -1,0 +1,6 @@
+{
+  "name": "SafeRoles",
+  "description": "RBAC policy control for Zodiac Roles, with Safe-native approvals.",
+  "iconPath": "favicon-192.png",
+  "safe_apps_permissions": []
+}

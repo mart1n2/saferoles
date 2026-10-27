@@ -140,6 +140,8 @@ export type DraftRole = {
   id: string;
   /** The on-chain role key: a human string (encoded to bytes32) or raw bytes32. */
   key: string;
+  /** Original encoded key for an imported role; its identity cannot be renamed. */
+  deployedKey?: string;
   name: string;
   description: string;
   members: DraftMember[];

@@ -1,492 +1,100 @@
-"use client";
-
-/**
- * Injected-wallet path for submitting a policy update.
- *
- * Wallets with native Safe support (Rabby, among others) expose the Safe itself
- * as the connected account and turn a transaction from it into a Safe
- * transaction. That makes a plain wallet connection a complete submission path:
- * no Transaction Service API key, no manual hash signing.
- *
- * The critical constraint is *which* account is connected. Roles configuration
- * calls are only accepted from the modifier's owner — the Safe. An owner EOA
- * signing directly would revert, so that case is rejected up front rather than
- * discovered after a failed transaction.
- *
- * Batches are submitted atomically through EIP-5792 `wallet_sendCalls` when the
- * wallet supports it. Otherwise they are sent sequentially, which is reported
- * plainly because a partially-applied policy is a real outcome.
- */
-import { Interface, getAddress, isAddress } from "ethers";
+/** wagmi owns connection/account/network events; viem owns selected-provider RPC. */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  PartialSubmissionError,
-  type SubmissionResult,
-} from "./submission";
-
-type RequestArgs = { method: string; params?: unknown[] | object };
-
-type Provider = {
-  request(args: RequestArgs): Promise<unknown>;
-  on?(event: string, handler: (...args: never[]) => void): void;
-  removeListener?(event: string, handler: (...args: never[]) => void): void;
-};
-
-declare global {
-  interface Window {
-    ethereum?: Provider;
-  }
-}
-
+import { useConfig, useConnect, useConnection, useConnectors, useSwitchChain } from "wagmi";
+import { disconnectWallets } from "./wallet-config";
+import { createWalletRpc, idleSafeInspection, type WalletProvider, type WalletSafeInspection, type WalletTransaction, type BatchSupport } from "./wallet-rpc";
+import type { SubmissionResult } from "./submission";
+export type { WalletSafeInspection, WalletTransaction, BatchSupport } from "./wallet-rpc";
 export type WalletStatus = "unavailable" | "disconnected" | "connecting" | "connected";
-
-export type BatchSupport = "atomic" | "sequential";
-
-export type WalletTransaction = { to: string; value: string; data: string };
-
-export type WalletSafeInspection = {
-  status: "idle" | "checking" | "valid" | "invalid" | "unknown";
-  owners: string[];
-  threshold: number | null;
-  problem: string | null;
-};
-
 export type WalletState = {
-  status: WalletStatus;
-  account: string | null;
-  chainId: number | null;
-  error: string | null;
-  batchSupport: BatchSupport;
-  connect: () => Promise<void>;
-  /** Submits the batch while preserving which kind of identifier was returned. */
+  status: WalletStatus; account: string | null; chainId: number | null; error: string | null;
+  walletName: string | null; connectionId: string | null; wallets: {id:string; name:string}[]; batchSupport: BatchSupport; batchDetail: string;
+  connect: (connectorId?: string) => Promise<void>;
+  disconnect: () => Promise<void>;
   send: (transactions: WalletTransaction[]) => Promise<SubmissionResult>;
-  /** Asks the wallet to move to `chainId`, so a modifier on another chain is reachable. */
+  sendAtomic: (transactions: WalletTransaction[]) => Promise<SubmissionResult>;
   switchChain: (chainId: number) => Promise<void>;
-  /** Reads bytecode at an address, or null when no provider is available. */
   getCode: (address: string) => Promise<string | null>;
-  /** Current connected-account check. An EOA never qualifies as a Safe. */
+  readContract: (to: string, data: string) => Promise<string | null>;
   safeInspection: WalletSafeInspection;
-  /**
-   * Probes the current chain for the Safe interface. When `moduleAddress` is
-   * supplied, the result also comes from `isModuleEnabled` in the same probe.
-   */
-  inspectSafe: (
-    safeAddress: string,
-    moduleAddress?: string,
-  ) => Promise<WalletSafeInspection & { moduleEnabled: boolean | null }>;
+  inspectSafe: (safeAddress: string, moduleAddress?: string) => Promise<WalletSafeInspection & {moduleEnabled:boolean|null}>;
 };
-
-const safeInterface = new Interface([
-  "function VERSION() view returns (string)",
-  "function getOwners() view returns (address[])",
-  "function getThreshold() view returns (uint256)",
-  "function nonce() view returns (uint256)",
-  "function isModuleEnabled(address module) view returns (bool)",
-]);
-
-const idleSafeInspection: WalletSafeInspection = {
-  status: "idle",
-  owners: [],
-  threshold: null,
-  problem: null,
-};
-
-function parseChainId(value: unknown): number | null {
-  if (typeof value === "string") {
-    const parsed = Number.parseInt(value, 16);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  if (typeof value === "number") return value;
-  return null;
-}
 
 export function useWallet(): WalletState {
-  const [status, setStatus] = useState<WalletStatus>("disconnected");
-  const [account, setAccount] = useState<string | null>(null);
-  const [chainId, setChainId] = useState<number | null>(null);
+  const config = useConfig();
+  const connection = useConnection();
+  const connectors = useConnectors();
+  const { mutateAsync: connectAsync, isPending } = useConnect();
+  const { mutateAsync: switchAsync } = useSwitchChain();
   const [error, setError] = useState<string | null>(null);
-  const [batchSupport, setBatchSupport] = useState<BatchSupport>("sequential");
-  const [safeInspection, setSafeInspection] =
-    useState<WalletSafeInspection>(idleSafeInspection);
+  const account = connection.address ?? null;
+  const chainId = connection.chainId ?? null;
+  const connector = connection.connector;
+  const status: WalletStatus = connection.status === "connected" ? "connected" : isPending || connection.status === "reconnecting" || connection.status === "connecting" ? "connecting" : "disconnected";
+  const identity = account && chainId !== null && connector ? `${connector.uid}:${account.toLowerCase()}:${chainId}` : null;
+  const [probe, setProbe] = useState<{identity:string; support:BatchSupport; detail:string; inspection:WalletSafeInspection} | null>(null);
+
+  const getRpc = useCallback(async () => {
+    if (!account || chainId === null || !connector) throw new Error("Connect a wallet before submitting.");
+    const assertCurrent = () => {
+      const active = config.state.current ? config.state.connections.get(config.state.current) : undefined;
+      if (!active || active.connector.uid !== connector.uid || active.accounts[0]?.toLowerCase() !== account.toLowerCase() || active.chainId !== chainId) {
+        throw new Error("The wallet connection changed. Review again before submitting.");
+      }
+    };
+    assertCurrent();
+    const provider = await connector.getProvider({chainId}) as WalletProvider | undefined;
+    assertCurrent();
+    if (!provider || typeof provider.request !== "function") throw new Error("The selected wallet provider is unavailable.");
+    return createWalletRpc(provider,{account,chainId},assertCurrent);
+  }, [account, chainId, connector, config]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (!identity || status !== "connected") return;
+    let cancelled=false;
+    void (async()=> {
+      try {
+        const rpc=await getRpc();
+        const [support,inspection]=await Promise.all([rpc.capabilities(),rpc.inspectSafe(account!)]);
+        if(!cancelled)setProbe({identity,support,detail:rpc.capabilityDetail(),inspection});
+      } catch(caught) {
+        if(!cancelled)setProbe({identity,support:"sequential",detail:"",inspection:{...idleSafeInspection,status:"unknown",problem:caught instanceof Error ? caught.message : "Could not verify wallet."}});
+      }
+    })();
+    return ()=>{cancelled=true;};
+  }, [identity,status,getRpc,account]);
 
-    const provider = window.ethereum;
-    if (!provider) {
-      // Deferred so the first paint is not a cascading re-render. Injected
-      // providers can also arrive slightly after load, so this re-checks.
-      const timer = setTimeout(
-        () => setStatus(window.ethereum ? "disconnected" : "unavailable"),
-        0,
-      );
-      return () => clearTimeout(timer);
-    }
-
-    // Account and chain can change at any time from inside the wallet. Tracking
-    // both is what keeps a proposal from being built against a stale chain.
-    const onAccountsChanged = (...args: never[]) => {
-      const accounts = args[0] as unknown as string[] | undefined;
-      const next = accounts?.[0] ?? null;
-      setAccount(next);
-      setStatus(next ? "connected" : "disconnected");
-    };
-    const onChainChanged = (...args: never[]) => {
-      setChainId(parseChainId(args[0]));
-    };
-
-    provider.on?.("accountsChanged", onAccountsChanged);
-    provider.on?.("chainChanged", onChainChanged);
-    return () => {
-      provider.removeListener?.("accountsChanged", onAccountsChanged);
-      provider.removeListener?.("chainChanged", onChainChanged);
-    };
-  }, []);
-
-  const connect = useCallback(async () => {
-    const provider = typeof window === "undefined" ? undefined : window.ethereum;
-    if (!provider) {
-      setStatus("unavailable");
-      setError("No injected wallet was found in this browser.");
-      return;
-    }
-
-    setStatus("connecting");
+  const connect = useCallback(async (connectorId?:string)=>{
     setError(null);
+    setProbe(null);
     try {
-      const accounts = (await provider.request({
-        method: "eth_requestAccounts",
-      })) as string[];
-      const next = accounts?.[0];
-      if (!next) throw new Error("The wallet returned no account.");
-
-      const rawChain = await provider.request({ method: "eth_chainId" });
-      const nextChain = parseChainId(rawChain);
-
-      // EIP-5792: ask whether this account can submit an atomic batch.
-      let support: BatchSupport = "sequential";
-      try {
-        const capabilities = (await provider.request({
-          method: "wallet_getCapabilities",
-          params: [next],
-        })) as Record<string, { atomic?: { status?: string }; atomicBatch?: { supported?: boolean } }>;
-        const forChain = nextChain
-          ? capabilities?.[`0x${nextChain.toString(16)}`]
-          : undefined;
-        const atomicStatus = forChain?.atomic?.status;
-        if (
-          atomicStatus === "supported" ||
-          atomicStatus === "ready" ||
-          forChain?.atomicBatch?.supported
-        ) {
-          support = "atomic";
-        }
-      } catch {
-        // Capability discovery is optional; absence just means sequential.
-      }
-
-      setAccount(next);
-      setChainId(nextChain);
-      setBatchSupport(support);
-      setStatus("connected");
-    } catch (caught) {
-      setStatus("disconnected");
-      setError(
-        caught instanceof Error ? caught.message : "The wallet connection failed.",
-      );
-    }
-  }, []);
-
-  const send = useCallback<WalletState["send"]>(
-    async (transactions: WalletTransaction[]) => {
-      const provider = typeof window === "undefined" ? undefined : window.ethereum;
-      if (!provider || !account || chainId === null) {
-        throw new Error("Connect a wallet before submitting.");
-      }
-      if (transactions.length === 0) throw new Error("There is nothing to submit.");
-
-      if (batchSupport === "atomic") {
-        const result = (await provider.request({
-          method: "wallet_sendCalls",
-          params: [
-            {
-              version: "2.0.0",
-              chainId: `0x${chainId.toString(16)}`,
-              from: account,
-              atomicRequired: true,
-              calls: transactions.map((transaction) => ({
-                to: transaction.to,
-                value: `0x${BigInt(transaction.value).toString(16)}`,
-                data: transaction.data,
-              })),
-            },
-          ],
-        })) as string | { id?: string };
-        const id = typeof result === "string" ? result : result?.id;
-        if (!id) throw new Error("The wallet did not return a batch identifier.");
-        return { kind: "bundleId", bundleId: id };
-      }
-
-      // Sequential fallback. Each call is a separate wallet confirmation.
-      const txHashes: string[] = [];
-      for (const transaction of transactions) {
-        try {
-          const hash = await provider.request({
-            method: "eth_sendTransaction",
-            params: [
-              {
-                from: account,
-                to: transaction.to,
-                value: `0x${BigInt(transaction.value).toString(16)}`,
-                data: transaction.data,
-              },
-            ],
-          });
-          if (typeof hash !== "string" || !hash) {
-            throw new Error("The wallet did not return a transaction hash.");
-          }
-          txHashes.push(hash);
-        } catch (caught) {
-          if (txHashes.length > 0) {
-            throw new PartialSubmissionError(
-              `${txHashes.length} of ${transactions.length} calls were submitted before the wallet stopped. Do not retry the whole batch until those transactions are reconciled.`,
-              txHashes,
-              caught instanceof Error ? { cause: caught } : undefined,
-            );
-          }
-          throw caught;
-        }
-      }
-      return { kind: "txHashes", txHashes };
-    },
-    [account, batchSupport, chainId],
-  );
-
-  const switchChain = useCallback(async (target: number) => {
-    const provider = typeof window === "undefined" ? undefined : window.ethereum;
-    if (!provider) throw new Error("No wallet is connected.");
-    try {
-      await provider.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: `0x${target.toString(16)}` }],
-      });
-      // `chainChanged` normally follows, but not every wallet emits it reliably.
-      setChainId(target);
-    } catch (caught) {
-      const code = (caught as { code?: number })?.code;
-      if (code === 4902) {
-        throw new Error(
-          "Your wallet does not have this network configured. Add it in the wallet, then try again.",
-        );
-      }
-      throw new Error(
-        caught instanceof Error ? caught.message : "The network switch was rejected.",
-      );
-    }
-  }, []);
-
-  const getCode = useCallback(async (address: string) => {
-    const provider = typeof window === "undefined" ? undefined : window.ethereum;
-    if (!provider) return null;
-    try {
-      return (await provider.request({
-        method: "eth_getCode",
-        params: [address, "latest"],
-      })) as string;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  const inspectSafe = useCallback<WalletState["inspectSafe"]>(
-    async (safeAddress, moduleAddress) => {
-      const provider = typeof window === "undefined" ? undefined : window.ethereum;
-      if (!provider) {
-        return {
-          ...idleSafeInspection,
-          status: "unknown",
-          problem: "No wallet provider is available to verify this Safe.",
-          moduleEnabled: null,
-        };
-      }
-      if (!isAddress(safeAddress)) {
-        return {
-          ...idleSafeInspection,
-          status: "invalid",
-          problem: "The connected account is not a valid address.",
-          moduleEnabled: null,
-        };
-      }
-      if (moduleAddress && !isAddress(moduleAddress)) {
-        return {
-          ...idleSafeInspection,
-          status: "invalid",
-          problem: "The modifier address is not valid.",
-          moduleEnabled: null,
-        };
-      }
-
-      const safeAddressChecked = getAddress(safeAddress);
-      const ethCall = async (data: string) =>
-        provider.request({
-          method: "eth_call",
-          params: [{ to: safeAddressChecked, data }, "latest"],
-        });
-
-      try {
-        const code = await provider.request({
-          method: "eth_getCode",
-          params: [safeAddressChecked, "latest"],
-        });
-        if (
-          typeof code !== "string" ||
-          !/^0x[0-9a-fA-F]+$/.test(code) ||
-          code.length <= 2
-        ) {
-          return {
-            ...idleSafeInspection,
-            status: "invalid",
-            problem:
-              "The connected account has no contract code. Select the Safe account in a Safe-aware wallet, not an owner EOA.",
-            moduleEnabled: null,
-          };
-        }
-
-        const [versionRaw, ownersRaw, thresholdRaw, nonceRaw] = await Promise.all([
-          ethCall(safeInterface.encodeFunctionData("VERSION")),
-          ethCall(safeInterface.encodeFunctionData("getOwners")),
-          ethCall(safeInterface.encodeFunctionData("getThreshold")),
-          ethCall(safeInterface.encodeFunctionData("nonce")),
-        ]);
-        if (
-          typeof versionRaw !== "string" ||
-          typeof ownersRaw !== "string" ||
-          typeof thresholdRaw !== "string" ||
-          typeof nonceRaw !== "string"
-        ) {
-          throw new Error("The provider returned an invalid Safe response.");
-        }
-        const version = String(
-          safeInterface.decodeFunctionResult("VERSION", versionRaw)[0],
-        );
-        const owners = [
-          ...(safeInterface.decodeFunctionResult("getOwners", ownersRaw)[0] as string[]),
-        ].map((owner) => getAddress(owner));
-        const thresholdValue = BigInt(
-          safeInterface.decodeFunctionResult("getThreshold", thresholdRaw)[0].toString(),
-        );
-        const nonce = BigInt(
-          safeInterface.decodeFunctionResult("nonce", nonceRaw)[0].toString(),
-        );
-        if (
-          !/^\d+\.\d+\.\d+(?:[-+].*)?$/.test(version) ||
-          owners.length === 0 ||
-          thresholdValue <= 0n ||
-          thresholdValue > BigInt(owners.length) ||
-          thresholdValue > BigInt(Number.MAX_SAFE_INTEGER) ||
-          nonce < 0n
-        ) {
-          return {
-            ...idleSafeInspection,
-            status: "invalid",
-            owners,
-            problem:
-              "The connected contract did not return a valid Safe owner set and threshold.",
-            moduleEnabled: null,
-          };
-        }
-
-        let moduleEnabled: boolean | null = null;
-        if (moduleAddress) {
-          const enabledRaw = await ethCall(
-            safeInterface.encodeFunctionData("isModuleEnabled", [
-              getAddress(moduleAddress),
-            ]),
-          );
-          if (typeof enabledRaw !== "string") {
-            throw new Error("The provider returned an invalid module response.");
-          }
-          moduleEnabled = Boolean(
-            safeInterface.decodeFunctionResult("isModuleEnabled", enabledRaw)[0],
-          );
-        }
-
-        return {
-          status: "valid",
-          owners,
-          threshold: Number(thresholdValue),
-          problem: null,
-          moduleEnabled,
-        };
-      } catch (caught) {
-        return {
-          ...idleSafeInspection,
-          status: "unknown",
-          problem: `Could not verify the connected account as a Safe: ${
-            caught instanceof Error ? caught.message : "the RPC read failed"
-          }`,
-          moduleEnabled: null,
-        };
-      }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (status !== "connected" || !account || chainId === null) {
-      const timer = setTimeout(() => setSafeInspection(idleSafeInspection), 0);
-      return () => clearTimeout(timer);
-    }
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      setSafeInspection({ ...idleSafeInspection, status: "checking" });
-      void inspectSafe(account).then((inspection) => {
-        if (!cancelled) {
-          setSafeInspection({
-            status: inspection.status,
-            owners: inspection.owners,
-            threshold: inspection.threshold,
-            problem: inspection.problem,
-          });
-        }
-      });
-    }, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [account, chainId, inspectSafe, status]);
-
-  return useMemo(
-    () => ({
-      status,
-      account,
-      chainId,
-      error,
-      batchSupport,
-      connect,
-      send,
-      switchChain,
-      getCode,
-      safeInspection,
-      inspectSafe,
-    }),
-    [
-      status,
-      account,
-      chainId,
-      error,
-      batchSupport,
-      connect,
-      send,
-      switchChain,
-      getCode,
-      safeInspection,
-      inspectSafe,
-    ],
-  );
+      const chosen=connectorId ? connectors.find(item=>item.uid===connectorId) : connectors.length===1 ? connectors[0] : undefined;
+      if(!chosen)throw new Error("Choose which wallet to connect.");
+      await connectAsync({connector:chosen});
+    } catch(caught) { setError(caught instanceof Error ? caught.message : "Wallet connection failed."); throw caught; }
+  },[connectAsync,connectors]);
+  const disconnect = useCallback(async()=>{
+    setError(null);setProbe(null);
+    try {await disconnectWallets(config);}
+    catch(caught){setError(caught instanceof Error ? caught.message : "Wallet disconnect failed.");throw caught;}
+  },[config]);
+  const switchChain=useCallback(async(next:number)=>{
+    setError(null);
+    try {await switchAsync({chainId:next});}
+    catch(caught){setError(caught instanceof Error ? caught.message : "Network switch failed.");}
+  },[switchAsync]);
+  const send=useCallback<WalletState["send"]>(async txs=>(await getRpc()).send(txs),[getRpc]);
+  const sendAtomic=useCallback<WalletState["send"]>(async txs=>(await getRpc()).send(txs,true),[getRpc]);
+  const getCode=useCallback(async(address:string)=>{try{return await (await getRpc()).getCode(address);}catch{return null;}},[getRpc]);
+  const readContract=useCallback(async(to:string,data:string)=>{try{return await (await getRpc()).readContract(to,data);}catch{return null;}},[getRpc]);
+  const inspectSafe=useCallback<WalletState["inspectSafe"]>(async(safe,module)=>{
+    try{return await (await getRpc()).inspectSafe(safe,module);}
+    catch(caught){return {...idleSafeInspection,status:"unknown",problem:caught instanceof Error ? caught.message : "Wallet unavailable.",moduleEnabled:null};}
+  },[getRpc]);
+  const currentProbe = probe?.identity===identity ? probe : null;
+  const wallets = useMemo(()=>connectors.filter(item=>item.id!=="injected" || connectors.length===1).map(item=>({id:item.uid,name:item.id==="injected" ? "Browser wallet" : item.name})),[connectors]);
+  return {status,account,chainId,error,connectionId:identity,walletName:connector?.name ?? null,wallets,connect,disconnect,switchChain,send,sendAtomic,getCode,readContract,inspectSafe,batchSupport:currentProbe?.support ?? "sequential",batchDetail:currentProbe?.detail ?? "",safeInspection:currentProbe?.inspection ?? {...idleSafeInspection,status:status==="connected"?"checking":"idle"}};
 }
-
 /**
  * Checks a wallet connection against the modifier it is about to reconfigure.
  *
@@ -528,7 +136,7 @@ export function verifyWalletForModifier({
   }
   if (!same(account, owner)) {
     problems.push(
-      `Only the modifier's owner (${owner ?? "unknown"}) can change its configuration. Select that Safe as the active account — a Safe owner signing directly would be rejected.`,
+      `Only the modifier's owner (${owner ?? "unknown"}) can change its configuration. Select that Safe as the active account — signing from a personal wallet would be rejected.`,
     );
   }
   if (!same(account, avatar)) {
@@ -546,7 +154,7 @@ export function verifyWalletForModifier({
       safeStatus === "checking"
         ? "Verifying that the connected account is a Safe…"
         : safeStatus === "invalid"
-          ? "The connected account is not a valid Safe. Select the Safe account, not an owner EOA."
+          ? "The connected account is not a valid Safe. Select your Safe account rather than a personal wallet account."
           : "The connected account could not be verified as a Safe.",
     );
   }

@@ -234,3 +234,13 @@ test("checks are pending, not passing, while reads are outstanding", () => {
 test("salt nonces differ between setups", () => {
   assert.match(freshSaltNonce(), /^\d+$/);
 });
+
+test("failed bytecode reads never count as vacant or absent deployment evidence", () => {
+  const checks=evaluateMastercopy({...healthy,code:"read-unavailable",factoryCode:"read-unavailable",predictedCode:"read-unavailable"});
+  for(const id of ["deployed","runtime","factory","vacant"]){
+    const check=checks.find(item=>item.id===id);
+    assert.equal(check?.status,"fail");
+    assert.match(check?.detail??"",/could not read/);
+  }
+  assert.equal(checksPass(checks),false);
+});

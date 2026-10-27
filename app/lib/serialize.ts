@@ -7,7 +7,8 @@
  * cannot persist arbitrary JSON and make later readers crash.
  */
 import { getAddress, isAddress } from "ethers";
-import type { Call, Condition } from "zodiac-roles-sdk";
+import type { Condition } from "zodiac-roles-sdk";
+import type { Call } from "./zodiac-compat";
 import type {
   ConditionOperator,
   DraftPolicy,
@@ -119,6 +120,12 @@ function address(value: unknown, path: string): string {
   const candidate = stringValue(value, path, 42, { nonempty: true });
   if (!isAddress(candidate)) fail(path, "must be a complete address");
   return getAddress(candidate);
+}
+
+function roleKeyIdentity(value: unknown, path: string): string {
+  const key = stringValue(value, path, 66);
+  if (!/^0x[0-9a-f]{64}$/i.test(key)) fail(path, "must be an encoded bytes32 role key");
+  return key.toLowerCase();
 }
 
 function boundedDraftText(value: unknown, path: string, maxLength = 16_384): string {
@@ -305,6 +312,7 @@ export function parseDraftPolicy(
         "permissions",
         "annotations",
         "residualTargets",
+        "deployedKey",
       ],
       path,
     );
@@ -459,6 +467,7 @@ export function parseDraftPolicy(
     return {
       id,
       key: boundedDraftText(role.key, `${path}.key`, 512),
+      ...(role.deployedKey === undefined ? {} : { deployedKey: roleKeyIdentity(role.deployedKey, `${path}.deployedKey`) }),
       name: boundedDraftText(role.name, `${path}.name`, 256),
       description: boundedDraftText(role.description, `${path}.description`, 8_192),
       members,

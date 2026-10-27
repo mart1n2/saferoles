@@ -1,0 +1,50 @@
+import { indexedDB, IDBKeyRange } from "fake-indexeddb";
+Object.assign(globalThis,{indexedDB,IDBKeyRange});
+import assert from "node:assert/strict";
+import test from "node:test";
+import {saveLocalDraft,readLocalDraft,listLocalDrafts,removeLocalDraft,exportLocalDraft,importLocalDraft} from "../app/lib/local-workspace";
+import {localRead} from "../app/lib/local-db";
+import {encryptApiKey,decryptApiKey,rememberApiKey,savedApiKey,getApiKey,lockApiKeys,unlockApiKey,forgetApiKey,setSessionApiKey} from "../app/lib/api-keys";
+const rolesMod=`0x${"1".repeat(40)}`,safeAddress=`0x${"2".repeat(40)}`;
+const input={name:"Ops",chainId:1,rolesMod,safeAddress,policy:{chainId:1,rolesMod,roles:[],allowances:[]},baseStateHash:null};
+test("local drafts enforce scope and atomic compare-and-swap across concurrent writers",async()=>{
+  const row=await saveLocalDraft(input);
+  const results=await Promise.allSettled(["A","B"].map(name=>saveLocalDraft({chainId:1,rolesMod,policy:input.policy,version:1,name},row.id)));
+  assert.equal(results.filter(result=>result.status==="fulfilled").length,1);
+  assert.equal(results.filter(result=>result.status==="rejected").length,1);
+  const current=await readLocalDraft(row.id,1,rolesMod);assert.equal(current.version,2);
+  await assert.rejects(readLocalDraft(row.id,10,rolesMod),/different modifier/);
+  await assert.rejects(removeLocalDraft(row.id,1,rolesMod,1),/changed/);
+  await removeLocalDraft(row.id,1,rolesMod,2);
+  await assert.rejects(readLocalDraft(row.id,1,rolesMod),/no longer exists/);
+});
+test("export/import roundtrip creates a new scoped draft and validates untrusted input",async()=>{
+  const row=await saveLocalDraft(input);const exported=exportLocalDraft(row);const copy=await importLocalDraft(exported);
+  assert.notEqual(copy.id,row.id);assert.deepEqual(copy.policy,row.policy);
+  assert.ok((await listLocalDrafts(1,rolesMod)).some(d=>d.id===copy.id));
+  assert.equal((await listLocalDrafts(10,rolesMod)).length,0);
+  assert.doesNotMatch(exported,/ciphertext|secrets|apiKey|passphrase/);
+  const bad=JSON.parse(exported);bad.draft.policy.chainId=10;
+  await assert.rejects(importLocalDraft(JSON.stringify(bad)),/chain/);
+  await assert.rejects(importLocalDraft('{"format":"other","version":1}'),/Unsupported/);
+  await assert.rejects(importLocalDraft("x".repeat(2_000_001)),/2 MB/);
+});
+test("API credentials use randomized authenticated encryption bound to service identity",async()=>{
+  const secret="a-test-api-credential",passphrase="long unique test passphrase";
+  const a=await encryptApiKey("safe",secret,passphrase),b=await encryptApiKey("safe",secret,passphrase);
+  assert.notEqual(a.iv,b.iv);assert.notEqual(a.salt,b.salt);assert.notEqual(a.ciphertext,b.ciphertext);
+  assert.equal(await decryptApiKey("safe",a,passphrase),secret);
+  await assert.rejects(decryptApiKey("safe",a,"wrong passphrase"),/Could not unlock/);
+  await assert.rejects(decryptApiKey("etherscan",{...a,service:"etherscan"},passphrase),/Could not unlock/);
+  await assert.rejects(decryptApiKey("safe",{...a,ciphertext:a.ciphertext.slice(0,-4)+"AAAA"},passphrase),/Could not unlock/);
+  await assert.rejects(encryptApiKey("safe",secret,"short"),/passphrase/);
+});
+test("only explicit encrypted save persists; reload/lock requires passphrase; delete clears both",async()=>{
+  setSessionApiKey("etherscan","memory-only-test");assert.equal(await savedApiKey("etherscan"),undefined);
+  await rememberApiKey("safe","persisted-test-key","a long test passphrase");
+  const raw=await localRead("secrets","safe");assert.doesNotMatch(JSON.stringify(raw),/persisted-test-key|a long test passphrase/);
+  assert.equal(getApiKey("safe"),"persisted-test-key");lockApiKeys();assert.equal(getApiKey("safe"),undefined);
+  await assert.rejects(unlockApiKey("safe","wrong password"),/Could not unlock/);assert.equal(getApiKey("safe"),undefined);
+  await unlockApiKey("safe","a long test passphrase");assert.equal(getApiKey("safe"),"persisted-test-key");
+  await forgetApiKey("safe");assert.equal(getApiKey("safe"),undefined);assert.equal(await savedApiKey("safe"),undefined);
+});

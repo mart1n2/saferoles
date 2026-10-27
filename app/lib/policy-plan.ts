@@ -1,6 +1,6 @@
 /**
  * Turns "current on-chain state vs. desired draft" into the exact set of
- * Roles modifier calls, and describes them for review.
+ * Roles modifier calls through the local compatibility planner, and describes them for review.
  *
  * The diff shown to a reviewer and the calldata that gets signed come from the
  * same place: the SDK's planned call list. There is no separate edit log that
@@ -9,12 +9,10 @@
 import {
   ExecutionOptions,
   Operator,
-  callsPlannedForApply,
   decodeKey,
-  encodeCalls,
-  type Call,
   type Condition,
 } from "zodiac-roles-sdk";
+import { callsPlannedForApply, encodeCalls, type Call } from "./zodiac-compat";
 import type { SdkState } from "./policy-codec";
 import type { DraftPermission, PolicyIssue } from "./policy";
 import { shortHex } from "./abi";
@@ -314,6 +312,17 @@ function sameAllowance(
  * fetched; passing a fabricated baseline would compute a diff against something
  * that does not exist and emit calls that do not apply.
  */
+function canonicalAddresses(state: SdkState): SdkState {
+  return {
+    ...state,
+    roles: state.roles.map((role) => ({
+      ...role,
+      members: role.members.map((member) => member.toLowerCase() as `0x${string}`),
+      targets: role.targets.map((target) => ({ ...target, address: target.address.toLowerCase() as `0x${string}` })),
+    })),
+  };
+}
+
 export function buildPlan({
   rolesMod,
   current,
@@ -339,7 +348,10 @@ export function buildPlan({
 
   let calls: Call[];
   try {
-    calls = callsPlannedForApply(current, desired);
+    // The planner compares addresses as strings. The indexer returns checksummed
+    // ones while the editor emits lowercase, so without one canonical form an
+    // untouched policy diffs as "revoke everything, then grant it again".
+    calls = callsPlannedForApply(canonicalAddresses(current), canonicalAddresses(desired));
   } catch (error) {
     return {
       ...emptyPlan,
@@ -354,7 +366,7 @@ export function buildPlan({
     };
   }
 
-  // The SDK planner currently ignores balance- and timestamp-only allowance
+  // The retained v3 planner ignores balance- and timestamp-only allowance
   // changes. Those fields are calldata-bearing state: silently dropping a
   // top-up would show a Budget edit while submitting no call. Fill any missing
   // allowance diff explicitly, while avoiding duplicates when the SDK already

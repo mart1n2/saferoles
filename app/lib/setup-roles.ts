@@ -355,7 +355,12 @@ export function evaluateMastercopy({
     }
   }
 
-  return checks;
+  // RPC failures are not evidence that an address is empty or a deployment absent.
+  const failedRead=(value:string|null|undefined)=>typeof value==="string" && !/^0x(?:[0-9a-f]{2})*$/i.test(value);
+  return checks.map(check=>{
+    const unavailable=(check.id==="deployed" || check.id==="runtime") ? failedRead(code) : check.id==="factory" ? failedRead(factoryCode) : check.id==="vacant" ? failedRead(predictedCode) : false;
+    return unavailable ? {...check,status:"fail" as const,detail:"The wallet could not read this contract. Check your connection and retry."}:check;
+  });
 }
 
 export function checksPass(checks: readonly SetupCheck[]): boolean {
