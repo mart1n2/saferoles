@@ -2586,3 +2586,9 @@ button:disabled, .button:disabled { cursor: not-allowed; opacity: .45; }
 .function-filter { width: 100%; margin-bottom: 8px; }
 /* The fixed change bar must never cover the last fields of a form. */
 .app-shell:has(.change-bar), .configuration-page { padding-bottom: 120px; }
+
+/* API keys dialog: header and close stay reachable while the forms scroll. */
+.connection-modal > .modal-heading { position: sticky; top: -22px; z-index: 2; margin: -22px -22px 12px; padding: 18px 22px 12px; background: var(--paper); border-bottom: 1px solid var(--rule); }
+.key-intro { color: var(--ink-2); font-size: 14px; line-height: 1.6; margin: 0 0 8px; }
+.key-hint { align-self: center; color: var(--ink-2); }
+.api-key-form > small { line-height: 1.5; }

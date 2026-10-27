@@ -458,13 +458,12 @@ export default function Home() {
           <div className="sidebar-foot">
             <span>Modifier</span>
             <code title={policy.scope.rolesMod}>{shortHex(policy.scope.rolesMod, 10, 8)}</code>
-            <span className={`health-badge ${verification.ok ? "" : "warn"}`}>
-              {safe.mode !== "safe-app"
-                ? "Read-only"
-                : verification.ok
-                  ? "Safe verified"
-                  : "Not governed here"}
-            </span>
+            {/* No badge without a submitter: the view-only notice already says so. */}
+            {submitVia !== "none" && (
+              <span className={`health-badge ${verification.ok ? "" : "warn"}`}>
+                {verification.ok ? "Can submit" : "Cannot submit here"}
+              </span>
+            )}
           </div>
         </aside>
 

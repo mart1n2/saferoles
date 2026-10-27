@@ -1,3 +1,4 @@
+import { ModalPortal } from "./modal-portal";
 import { exportLocalDraft, importLocalDraft } from "../lib/local-workspace";
 import type { DraftPolicy } from "../lib/policy";
 import { useState } from "react";
@@ -39,7 +40,7 @@ export function DraftsDialog({
 
   useDismissOnEscape(onClose);
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+    <ModalPortal><div className="modal-backdrop" role="presentation" onClick={onClose}>
       <section
         className="modal connection-modal"
         role="dialog"
@@ -129,7 +130,7 @@ export function DraftsDialog({
           )}
         </div>
       </section>
-    </div>
+    </div></ModalPortal>
   );
 }
 

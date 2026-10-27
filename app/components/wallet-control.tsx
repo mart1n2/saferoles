@@ -1,3 +1,4 @@
+import { ModalPortal } from "./modal-portal";
 import { useState } from "react";
 import type { WalletState } from "../lib/use-wallet";
 import { shortHex } from "../lib/abi";
@@ -19,7 +20,7 @@ export function WalletControl({ wallet }: { wallet: WalletState }) {
       {wallet.status==="connecting" ? "Connecting…" : wallet.account ? "Change wallet" : "Connect wallet"}
     </button>
     {wallet.account && <button className="button ghost" onClick={()=>void wallet.disconnect().catch(()=>{})}>Disconnect</button>}
-    {open && <div className="modal-backdrop" role="presentation" onClick={()=>{if(!pending)setOpen(false);}}>
+    {open && <ModalPortal><div className="modal-backdrop" role="presentation" onClick={()=>{if(!pending)setOpen(false);}}>
       <section className="modal connection-modal" role="dialog" aria-modal="true" aria-labelledby="wallet-title" onClick={event=>event.stopPropagation()}>
         <div className="modal-heading"><div><span className="eyebrow">Wallet connection</span><h2 id="wallet-title">Choose a wallet</h2><p>Select the browser wallet to use for this connection.</p></div>
           <button className="icon-button" aria-label="Close wallet selector" disabled={!!pending} onClick={()=>setOpen(false)}>×</button>
@@ -31,6 +32,6 @@ export function WalletControl({ wallet }: { wallet: WalletState }) {
         {wallet.error && <p className="error-text" role="alert">{wallet.error}</p>}
         <p className="inline-empty">Connecting a wallet does not grant permissions. To make changes, approve through Safe or connect a wallet with your Safe selected.</p>
       </section>
-    </div>}
+    </div></ModalPortal>}
   </>;
 }
