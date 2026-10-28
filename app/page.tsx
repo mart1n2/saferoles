@@ -25,6 +25,8 @@ import { DraftsDialog } from "./components/drafts-dialog";
 import { ScopePicker } from "./components/scope-picker";
 import { ContractName } from "./components/contract-name";
 import { summarizeCondition } from "./lib/condition-summary";
+import { isBlankPermission } from "./lib/policy-codec";
+import type { DraftPolicy } from "./lib/policy";
 
 const SetupPage = lazy(() => import("./setup-page").then(module => ({default:module.SetupPage})));
 const ReviewPage = lazy(() => import("./review-page").then(module => ({default:module.ReviewPage})));
@@ -98,9 +100,11 @@ export default function Home() {
   const safe = useSafe();
   const wallet = useWallet();
   const policy = usePolicy();
-  const { tab, setTab, setSelectedRoleId, newRoleName, setNewRoleName, newMemberAddress, setNewMemberAddress, newMemberLabel, setNewMemberLabel, draft, roles, selectorNames, functionNames, selectedRole, selectedPermission, editRole, editPermission, addRole, removeRole, addPermission, removePermission, addMember, addAllowance, editAllowance, setSelectedPermissionId, resetSelection } = usePolicyEditor(policy);
+  const { tab, setTab, setSelectedRoleId, newRoleName, setNewRoleName, newMemberAddress, setNewMemberAddress, newMemberLabel, setNewMemberLabel, draft, roles, selectorNames, functionNames, selectedRole, selectedPermission, editRole, editPermission, addRole, addPermission, addMember, addAllowance, editAllowance, setSelectedPermissionId, resetSelection } = usePolicyEditor(policy);
 
   const [query, setQuery] = useState("");
+  // The draft right after a removal, so Undo is offered only until the next edit.
+  const [undo, setUndo] = useState<{ label: string; before: DraftPolicy; after: DraftPolicy } | null>(null);
   const [showScope, setShowScope] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [showDrafts, setShowDrafts] = useState(false);
@@ -255,6 +259,23 @@ export default function Home() {
 
   if(policy.status==="error" || !draft) return <main className="app-shell boot"><div className="boot-card error"><h1>Could not read the policy</h1><p>{policy.error}</p><div className="boot-actions"><button className="button secondary" onClick={()=>void policy.reload()}>Try again</button><button className="button ghost" onClick={()=>setShowScope(true)}>Choose a different modifier</button></div></div></main>;
 
+  /** Removes something from the draft and offers Undo until the next edit. */
+  const removeWithUndo = (label: string, transform: (current: DraftPolicy) => DraftPolicy) => {
+    const before = draft;
+    const after = transform(before);
+    policy.setDraft(() => after);
+    setUndo({ label, before, after });
+  };
+  const removePermissionFromList = (roleId: string, permissionId: string, label: string) => {
+    removeWithUndo(`permission ${label}`, (current) => ({
+      ...current,
+      roles: current.roles.map((role) => role.id === roleId ? { ...role, permissions: role.permissions.filter((item) => item.id !== permissionId) } : role),
+    }));
+    setSelectedPermissionId(null);
+  };
+
+  const memberDuplicate = Boolean(selectedRole && isAddress(newMemberAddress) && selectedRole.members.some((member) => member.address.toLowerCase() === newMemberAddress.toLowerCase()));
+  const memberReady = isAddress(newMemberAddress) && !memberDuplicate;
   const filteredRoles=roles.filter(role=>`${role.name} ${role.key}`.toLowerCase().includes(query.toLowerCase()));
   return <main className="app-shell editor-page">
     <header className="topbar">
@@ -397,7 +418,7 @@ export default function Home() {
         <aside className="role-sidebar">
           <div className="sidebar-heading">
             <div>
-              <span className="eyebrow">Indexed policy</span>
+              <span className="eyebrow">{plan.changes.length > 0 ? `Draft · ${plan.changes.length} unsaved change${plan.changes.length === 1 ? "" : "s"}` : "Indexed policy"}</span>
               <h1>Roles</h1>
             </div>
             <button
@@ -441,14 +462,17 @@ export default function Home() {
                     <b>{role.name || role.key}</b>
                     <small>
                       {role.members.length} member{role.members.length === 1 ? "" : "s"} ·{" "}
-                      {role.permissions.length} permission
-                      {role.permissions.length === 1 ? "" : "s"}
+                      {role.permissions.filter((item) => !isBlankPermission(item)).length} permission
+                      {role.permissions.filter((item) => !isBlankPermission(item)).length === 1 ? "" : "s"}
                     </small>
                   </span>
-                  <span className={`risk-dot ${roleRisk.toLowerCase()}`} />
+                  <span className={`risk-dot ${roleRisk.toLowerCase()}`} role="img" aria-label={`Highest permission risk: ${roleRisk}`} title={`Highest permission risk: ${roleRisk}`} />
                 </button>
               );
             })}
+            {roles.length > 0 && filteredRoles.length === 0 && (
+              <p className="inline-empty">No role matches “{query}”.</p>
+            )}
             {roles.length === 0 && (
               <p className="inline-empty">
                 This modifier has no roles yet.
@@ -526,7 +550,12 @@ export default function Home() {
                 </div>
                 <button
                   className="delete-link"
-                  onClick={() => removeRole(selectedRole.id)}
+                  title={selectedRole.deployedKey ? "Revokes all of this role's permissions and members on chain once submitted. You can undo until your next edit." : "Removes this unsaved role"}
+                  onClick={() => {
+                    removeWithUndo(`role ${selectedRole.name || selectedRole.key}`, (current) => ({ ...current, roles: current.roles.filter((entry) => entry.id !== selectedRole.id) }));
+                    setSelectedRoleId(null);
+                    setSelectedPermissionId(null);
+                  }}
                 >
                   Remove role
                 </button>
@@ -583,8 +612,8 @@ export default function Home() {
                             (condition) => condition.operator !== "pass",
                           );
                           return (
+                            <div className="permission-row-wrap" key={permission.id}>
                             <button
-                              key={permission.id}
                               className="permission-row"
                               onClick={() => setSelectedPermissionId(permission.id)}
                             >
@@ -649,6 +678,15 @@ export default function Home() {
                               </span>
                               <span className={`risk-badge ${risk.toLowerCase()}`} title={riskReason(permission)}>{risk}</span>
                             </button>
+                            <button
+                              className="row-remove permission-remove"
+                              aria-label={`Remove permission ${permission.name || shortHex(permission.targetAddress) || "New target"}`}
+                              title="Remove permission"
+                              onClick={() => removePermissionFromList(selectedRole.id, permission.id, permission.name || shortHex(permission.targetAddress) || "(new)")}
+                            >
+                              ×
+                            </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -667,7 +705,7 @@ export default function Home() {
                         onChange={(update) =>
                           editPermission(selectedRole.id, selectedPermission.id, update)
                         }
-                        onRemove={() => removePermission(selectedPermission.id)}
+                        onRemove={() => removePermissionFromList(selectedRole.id, selectedPermission.id, selectedPermission.name || shortHex(selectedPermission.targetAddress) || "(new)")}
                       />
                   </section>}
                 </div>
@@ -689,6 +727,7 @@ export default function Home() {
                       placeholder="0x… member address"
                       aria-label="Member address"
                       onChange={(event) => setNewMemberAddress(event.target.value.trim())}
+                      onKeyDown={(event) => { if (event.key === "Enter" && memberReady) addMember(); }}
                     />
                     <input
                       value={newMemberLabel}
@@ -699,7 +738,7 @@ export default function Home() {
                     <button
                       className="button secondary"
                       onClick={addMember}
-                      disabled={!isAddress(newMemberAddress)}
+                      disabled={!memberReady}
                     >
                       Add member
                     </button>
@@ -707,10 +746,12 @@ export default function Home() {
                   {newMemberAddress && !isAddress(newMemberAddress) && (
                     <small className="error-text">Enter a complete 20-byte address.</small>
                   )}
+                  {memberDuplicate && (
+                    <small className="error-text">This address is already a member of this role.</small>
+                  )}
                   <div className="member-table">
                     <div className="table-head">
-                      <span>Member</span>
-                      <span>Label</span>
+                      <span>Member &amp; label</span>
                       <span>Address</span>
                       <span />
                     </div>
@@ -718,15 +759,26 @@ export default function Home() {
                       <div className="member-row" key={member.id}>
                         <span className="member-name">
                           <span className="avatar">{initials(member.label ?? member.address.slice(2, 4))}</span>
-                          <b>{member.label ?? "Unlabelled"}</b>
+                          <input
+                            className="member-label-input"
+                            aria-label={`Label for ${shortHex(member.address)}`}
+                            placeholder="Add a label (not stored on chain)"
+                            value={member.label ?? ""}
+                            onChange={(event) =>
+                              editRole(selectedRole.id, (role) => ({
+                                ...role,
+                                members: role.members.map((item) => item.id === member.id ? { ...item, label: event.target.value || undefined } : item),
+                              }))
+                            }
+                          />
                         </span>
-                        <span className="type-badge">{member.label ? "labelled" : "—"}</span>
                         <code title={member.address}>{shortHex(member.address, 10, 8)}</code>
                         <button
+                          aria-label={`Remove member ${member.label || shortHex(member.address)}`}
                           onClick={() =>
-                            editRole(selectedRole.id, (role) => ({
-                              ...role,
-                              members: role.members.filter((item) => item.id !== member.id),
+                            removeWithUndo(`member ${member.label || shortHex(member.address)}`, (current) => ({
+                              ...current,
+                              roles: current.roles.map((role) => role.id === selectedRole.id ? { ...role, members: role.members.filter((item) => item.id !== member.id) } : role),
                             }))
                           }
                         >
@@ -793,8 +845,8 @@ export default function Home() {
           ) : (
             <div className="empty-state">
               <span className="empty-mark" aria-hidden="true">∅</span>
-              <h3>No roles on this modifier</h3>
-              <p>Create a role to start describing what it may do.</p>
+              <h3>{plan.changes.length > 0 ? "All roles are removed in this draft" : "No roles on this modifier"}</h3>
+              <p>{plan.changes.length > 0 ? "Submitting would revoke everything. Undo the removal or Discard edits to bring them back." : "Create a role to start describing what it may do."}</p>
               <button className="button primary" onClick={() => setShowNewRole(true)}>
                 Create a role
               </button>
@@ -802,6 +854,14 @@ export default function Home() {
           )}
         </section>
       </div>
+
+      {undo && draft === undo.after && (
+        <div className="undo-toast" role="status">
+          <span>Removed {undo.label}.</span>
+          <button onClick={() => { policy.setDraft(() => undo.before); setUndo(null); }}>Undo</button>
+          <button aria-label="Dismiss" onClick={() => setUndo(null)}>×</button>
+        </div>
+      )}
 
       {(plan.changes.length > 0 || blockingIssues.length > 0) && (
         <div className="change-bar">

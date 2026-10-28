@@ -922,7 +922,7 @@ select:focus-visible {
 .member-row {
   padding: 11px 20px;
   display: grid;
-  grid-template-columns: 1.5fr 0.5fr 1fr 70px;
+  grid-template-columns: 1.6fr 1fr 90px;
   align-items: center;
   gap: 14px;
 }
@@ -2592,3 +2592,14 @@ button:disabled, .button:disabled { cursor: not-allowed; opacity: .45; }
 .key-intro { color: var(--ink-2); font-size: 14px; line-height: 1.6; margin: 0 0 8px; }
 .key-hint { align-self: center; color: var(--ink-2); }
 .api-key-form > small { line-height: 1.5; }
+
+/* Row-level remove, label editing and undo. */
+.permission-row-wrap { position: relative; border-bottom: 1px solid var(--rule); }
+.permission-row-wrap:last-child { border-bottom: 0; }
+.permission-row-wrap .permission-row { padding-right: 56px; border-bottom: 0; }
+.permission-remove { position: absolute; top: 50%; right: 14px; transform: translateY(-50%); width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font-size: 20px; cursor: pointer; }
+.permission-remove:hover, .permission-remove:focus-visible { background: #fdecea; color: var(--red); }
+.member-label-input { min-width: 0; width: 100%; border: 1px solid transparent; background: transparent; font: inherit; font-weight: 650; padding: 6px 8px; border-radius: 8px; }
+.member-label-input:hover, .member-label-input:focus { border-color: var(--rule-strong); background: var(--paper); }
+.undo-toast { position: fixed; z-index: 30; left: 50%; bottom: 96px; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-radius: 12px; background: #1b1f1c; color: #fff; box-shadow: var(--shadow); font-size: 14px; }
+.undo-toast button { background: none; border: 0; color: var(--lime, #c6f24e); font: inherit; font-weight: 700; cursor: pointer; padding: 2px 4px; }
