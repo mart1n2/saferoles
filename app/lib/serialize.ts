@@ -6,6 +6,7 @@
  * structure, scope and size are nevertheless validated here so an API caller
  * cannot persist arbitrary JSON and make later readers crash.
  */
+import { findUnwrapTarget } from "./unwrappers";
 import { getAddress, isAddress } from "ethers";
 import type { Condition } from "zodiac-roles-sdk";
 import type { Call } from "./zodiac-compat";
@@ -285,7 +286,7 @@ export function parseDraftPolicy(
   expected: { chainId: number; rolesMod: string },
 ): DraftPolicy {
   const policy = record(value, "policy");
-  exactKeys(policy, ["chainId", "rolesMod", "roles", "allowances"], "policy");
+  exactKeys(policy, ["chainId", "rolesMod", "roles", "allowances", "unwrappers"], "policy");
 
   const chainId = parseChainId(policy.chainId, "policy.chainId");
   const rolesMod = address(policy.rolesMod, "policy.rolesMod");
@@ -522,7 +523,12 @@ export function parseDraftPolicy(
     },
   );
 
-  return { chainId, rolesMod, roles, allowances };
+  const unwrappers = policy.unwrappers === undefined ? [] : arrayValue(policy.unwrappers, "policy.unwrappers", 16).map((entry, index) => {
+    const id = stringValue(entry, `policy.unwrappers[${index}]`, 64, { nonempty: true });
+    if (!findUnwrapTarget(id)) fail(`policy.unwrappers[${index}]`, "is not a supported batch target");
+    return id;
+  });
+  return { chainId, rolesMod, roles, allowances, ...(unwrappers.length ? { unwrappers: [...new Set(unwrappers)] } : {}) };
 }
 
 export type DraftCreatePayload = {

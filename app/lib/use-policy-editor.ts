@@ -4,7 +4,7 @@ import type { DraftAllowance, DraftPermission, DraftRole } from "./policy";
 import type { PolicyState } from "./use-policy";
 import { suggestRoleKey } from "./initialization";
 import { useFunctionNames, useSelectorNames } from "./use-abi";
-export const tabs = ["Permissions", "Members", "Allowances", "Activity"] as const;
+export const tabs = ["Permissions", "Members", "Allowances", "Batching", "Activity"] as const;
 export type Tab = (typeof tabs)[number];
 const nextId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 export function usePolicyEditor(policy: PolicyState) {

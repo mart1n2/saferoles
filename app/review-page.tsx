@@ -245,7 +245,7 @@ export function ReviewPage({
           <div>
             <span>Roles touched</span>
             <strong>
-              {new Set(plan.changes.map((change) => change.scope)).size}
+              {new Set(plan.changes.map((change) => change.scope).filter((scope) => scope !== "—")).size}
             </strong>
           </div>
           <div>

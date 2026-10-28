@@ -180,6 +180,8 @@ export type DraftPolicy = {
   rolesMod: string;
   roles: DraftRole[];
   allowances: DraftAllowance[];
+  /** Ids of official batch targets (see unwrappers.ts) to enable on this modifier. */
+  unwrappers?: string[];
 };
 
 /** A blocking validation problem, addressed to the thing that caused it. */

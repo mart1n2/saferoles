@@ -12,7 +12,7 @@ import { discoverOnChain, mergeMods, readUnindexedModifier } from "./onchain-mod
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RolesModifier } from "zodiac-roles-sdk";
 import { fromRolesMod, isBlankPermission, lockDeployedRoleKeys, toSdkState, type SdkState } from "./policy-codec";
-import { buildPlan, type Plan } from "./policy-plan";
+import { buildPlan, withUnwrappers, type Plan } from "./policy-plan";
 import type { DraftPolicy } from "./policy";
 import { browserRolesReader } from "./browser-data";
 import {
@@ -373,12 +373,17 @@ export function usePolicy(): PolicyState {
   const plan = useMemo<Plan>(() => {
     if (!draft || !current || !scope) return idlePlan;
     const { state, issues } = toSdkState(draft);
-    return buildPlan({
-      rolesMod: scope.rolesMod,
-      current,
-      desired: state,
-      issues,
-    });
+    return withUnwrappers(
+      buildPlan({
+        rolesMod: scope.rolesMod,
+        current,
+        desired: state,
+        issues,
+      }),
+      scope.rolesMod,
+      scope.chainId,
+      draft.unwrappers,
+    );
   }, [draft, current, scope]);
 
   return {

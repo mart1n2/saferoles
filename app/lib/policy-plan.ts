@@ -16,6 +16,7 @@ import { callsPlannedForApply, encodeCalls, type Call } from "./zodiac-compat";
 import type { SdkState } from "./policy-codec";
 import type { DraftPermission, PolicyIssue } from "./policy";
 import { shortHex } from "./abi";
+import { encodeUnwrapCall, findUnwrapTarget, unwrapCallFor, type UnwrapCall } from "./unwrappers";
 
 export type Risk = "Low" | "Medium" | "High" | "Critical";
 
@@ -75,8 +76,8 @@ export function riskReason(permission: DraftPermission): string {
 
 export type PlannedChange = {
   id: string;
-  call: Call;
-  action: "Grant" | "Restrict" | "Revoke" | "Budget" | "Membership" | "Metadata";
+  call: Call | UnwrapCall;
+  action: "Grant" | "Restrict" | "Revoke" | "Budget" | "Membership" | "Metadata" | "Batching";
   /** Decoded role key, or "—" for modifier-wide calls. */
   scope: string;
   summary: string;
@@ -95,7 +96,7 @@ export type EncodedTransaction = {
 };
 
 export type Plan = {
-  calls: Call[];
+  calls: (Call | UnwrapCall)[];
   transactions: EncodedTransaction[];
   changes: PlannedChange[];
   issues: PolicyIssue[];
@@ -434,4 +435,34 @@ export function buildPlan({
     issues: planIssues,
     risk: highestRisk(changes.map((change) => change.risk)),
   };
+}
+
+/**
+ * Adds the owner-only calls that enable batch unwrapping. They sit outside the
+ * role/allowance diff because they configure the modifier itself, and are shown
+ * to the reviewer like any other change.
+ */
+export function withUnwrappers(plan: Plan, rolesMod: string, chainId: number, ids: readonly string[] | undefined): Plan {
+  if (!ids?.length || plan.issues.length > 0) return plan;
+  const calls = [...plan.calls];
+  const changes = [...plan.changes];
+  const transactions = [...plan.transactions];
+  for (const id of ids) {
+    const call = unwrapCallFor(id, chainId);
+    const target = findUnwrapTarget(id);
+    if (!call || !target) continue;
+    calls.push(call);
+    transactions.push({ to: rolesMod, value: "0", data: encodeUnwrapCall(call), operation: 0 });
+    changes.push({
+      id: `unwrapper-${id}`,
+      call,
+      action: "Batching",
+      scope: "—",
+      summary: `Enable batched calls through ${target.label}`,
+      detail: `${call.to} · adapter ${call.adapter}`,
+      risk: "Medium",
+      rationale: "Role members will be able to send batches here. Each inner call is still checked against their own permissions.",
+    });
+  }
+  return { ...plan, calls, changes, transactions, risk: highestRisk(changes.map((change) => change.risk)) };
 }

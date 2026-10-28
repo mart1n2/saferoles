@@ -26,6 +26,8 @@ import { ScopePicker } from "./components/scope-picker";
 import { ContractName } from "./components/contract-name";
 import { summarizeCondition } from "./lib/condition-summary";
 import { isBlankPermission } from "./lib/policy-codec";
+import { UNWRAP_TARGETS } from "./lib/unwrappers";
+import { useUnwrapperStates } from "./lib/use-unwrappers";
 import type { DraftPolicy } from "./lib/policy";
 
 const SetupPage = lazy(() => import("./setup-page").then(module => ({default:module.SetupPage})));
@@ -103,6 +105,7 @@ export default function Home() {
   const { tab, setTab, setSelectedRoleId, newRoleName, setNewRoleName, newMemberAddress, setNewMemberAddress, newMemberLabel, setNewMemberLabel, draft, roles, selectorNames, functionNames, selectedRole, selectedPermission, editRole, editPermission, addRole, addPermission, addMember, addAllowance, editAllowance, setSelectedPermissionId, resetSelection } = usePolicyEditor(policy);
 
   const [query, setQuery] = useState("");
+  const unwrapperStates = useUnwrapperStates(policy.scope?.chainId ?? null, policy.scope?.rolesMod ?? null);
   // The draft right after a removal, so Undo is offered only until the next edit.
   const [undo, setUndo] = useState<{ label: string; before: DraftPolicy; after: DraftPolicy } | null>(null);
   const [showScope, setShowScope] = useState(false);
@@ -572,6 +575,7 @@ export default function Home() {
                     {item === "Permissions" && <span>{selectedRole.permissions.length}</span>}
                     {item === "Members" && <span>{selectedRole.members.length}</span>}
                     {item === "Allowances" && <span>{draft.allowances.length}</span>}
+                    {item === "Batching" && Boolean(draft.unwrappers?.length) && <span>{draft.unwrappers!.length}</span>}
                   </button>
                 ))}
               </nav>
@@ -850,6 +854,69 @@ export default function Home() {
                         <button className="button secondary" onClick={addAllowance}>+ Add allowance</button>
                       </div>
                     )}
+                  </div>
+                </section>
+              )}
+
+              {tab === "Batching" && (
+                <section className="single-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <span className="eyebrow">Batched transactions</span>
+                      <h3>Batching</h3>
+                      <p>
+                        Bots and apps often send several calls as one batch (Safe MultiSend, Morpho Bundler3).
+                        A batch is a single blob of calldata, so Roles cannot match it against per-call permissions.
+                      </p>
+                    </div>
+                  </div>
+                  <details className="how-to" open={!draft.unwrappers?.length}>
+                    <summary>What enabling does</summary>
+                    <p>
+                      Enabling a target installs an official <b>unwrapper</b> on this modifier for that batch contract.
+                      The modifier then splits each batch and checks <b>every inner call against the role&apos;s own permissions</b>,
+                      so a batch can never do more than its parts are allowed to do.
+                    </p>
+                    <p>
+                      Without it, role members cannot send that kind of batch at all. Enable only the batch contracts your
+                      bot actually uses. Each one is a separate owner-only transaction from your Safe.
+                    </p>
+                  </details>
+                  {unwrapperStates.error && <p className="error-text" role="alert">{unwrapperStates.error}</p>}
+                  <div className="unwrap-list">
+                    {UNWRAP_TARGETS.map((target) => {
+                      const state = unwrapperStates.states?.[target.id];
+                      const requested = Boolean(draft.unwrappers?.includes(target.id));
+                      const statusLabel = !state ? "Checking…" : state.status === "enabled" ? "Enabled" : state.status === "legacy" ? "Old adapter in use" : state.status === "unavailable" ? "Not available on this network" : "Not enabled";
+                      const canEnable = state && (state.status === "missing" || state.status === "legacy");
+                      return (
+                        <article className="unwrap-card" key={target.id}>
+                          <div>
+                            <b>{target.label}</b>
+                            <span className={`health-badge ${state?.status === "enabled" ? "" : state?.status === "legacy" ? "warn" : "neutral"}`}>{statusLabel}</span>
+                            <p>{target.explanation}</p>
+                            {state?.contract && <code title={state.contract}>{state.contract}</code>}
+                            {state?.status === "legacy" && <small className="field-help">An older adapter is set for this contract. Enabling replaces it with the current official one.</small>}
+                          </div>
+                          {canEnable && (
+                            <button
+                              className={requested ? "button ghost" : "button secondary"}
+                              onClick={() =>
+                                policy.setDraft((current) => {
+                                  const ids = new Set(current.unwrappers ?? []);
+                                  if (ids.has(target.id)) ids.delete(target.id); else ids.add(target.id);
+                                  const { unwrappers: _previous, ...rest } = current;
+                                  void _previous;
+                                  return ids.size ? { ...rest, unwrappers: [...ids] } : rest;
+                                })
+                              }
+                            >
+                              {requested ? "Planned · Undo" : "Enable"}
+                            </button>
+                          )}
+                        </article>
+                      );
+                    })}
                   </div>
                 </section>
               )}
