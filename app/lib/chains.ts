@@ -52,3 +52,13 @@ export function hasOfficialRoles(chainId: number): boolean {
 export function chainOptionLabel(chainId: number): string {
   return hasOfficialRoles(chainId) ? chainName(chainId) : `${chainName(chainId)} (no official Roles contract)`;
 }
+
+/**
+ * The official Zodiac app as a Safe App, preselecting the network. Initialising a
+ * Roles modifier there is the recommended route; Safe lets the user pick the Safe.
+ */
+export function zodiacAppUrl(chainId: number): string | null {
+  const prefix = chainPrefix(chainId);
+  if (!prefix) return null;
+  return `https://app.safe.global/share/safe-app?appUrl=${encodeURIComponent("https://zodiac.gnosisguild.org/")}&chain=${prefix}`;
+}

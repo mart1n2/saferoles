@@ -18,7 +18,7 @@ import { PermissionInspector } from "./permission-inspector";
 import { buildInitializationPlan, suggestRoleKey, verifyInitialization } from "./lib/initialization";
 import type { DraftRole } from "./lib/policy";
 import { shortHex } from "./lib/abi";
-import { chainName, hasOfficialRoles } from "./lib/chains";
+import { chainName, hasOfficialRoles, zodiacAppUrl } from "./lib/chains";
 import type { ResolvedAbi } from "./lib/abi-source";
 import {
   submissionReferences,
@@ -470,6 +470,16 @@ function SetupForm({
           </div>
         )}
 
+        {hasOfficialRoles(chainId) && zodiacAppUrl(chainId) && (
+          <div className="banner info compact" role="note">
+            <b>Prefer the official route?</b>
+            <span>
+              The Zodiac app inside Safe, maintained by Gnosis Guild, can initialize this too.{" "}
+              <a href={zodiacAppUrl(chainId)!} target="_blank" rel="noopener noreferrer">Open Zodiac in Safe ↗</a>
+            </span>
+          </div>
+        )}
+
         <ol className="setup-steps" aria-label="Initialization progress">
           <li aria-current={step === "role" ? "step" : undefined}>1. Role details</li>
           <li aria-current={step === "review" && state !== "done" ? "step" : undefined}>2. Review setup</li>
@@ -591,13 +601,12 @@ function SetupForm({
 
         {submitter && !submitter.atomic && submitter.sequential && submitter.safeVerified && (
           <div className="guardrail-callout" role="status">
-            <b>Your wallet will ask twice</b>
+            <b>Your wallet will ask for each step in turn</b>
             <p>
-              This wallet cannot batch calls, so it will first deploy the modifier
-              and then enable it on your Safe. Enabling comes last: if the second
-              step is cancelled or fails, the Safe is unchanged and only an unused
-              modifier exists. Confirm both requests (each may need Safe owner
-              signatures) and use Retry checks if anything looks off.
+              This wallet cannot batch calls, so it will confirm {plan?.transactions.length ?? "several"} calls one after
+              another: deploy the modifier, set it up (MultiSend support and your first role), and enable it last.
+              If you stop part-way, the Safe is unchanged: nothing has authority until that final enable.
+              Each request may need Safe owner signatures; use Retry checks if anything looks off.
             </p>
           </div>
         )}

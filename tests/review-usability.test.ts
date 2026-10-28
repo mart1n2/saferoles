@@ -30,3 +30,9 @@ test("a network without the official Roles contract is flagged, others are not",
   assert.match(chainOptionLabel(1101),/no official Roles contract/);
   assert.doesNotMatch(chainOptionLabel(8453),/no official/);
 });
+import { zodiacAppUrl } from "../app/lib/chains";
+test("the official Zodiac app link preselects the network",()=>{
+  assert.equal(zodiacAppUrl(1),"https://app.safe.global/share/safe-app?appUrl=https%3A%2F%2Fzodiac.gnosisguild.org%2F&chain=eth");
+  assert.match(zodiacAppUrl(8453)!,/chain=base$/);
+  assert.equal(zodiacAppUrl(999999),null);
+});

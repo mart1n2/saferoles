@@ -2,7 +2,7 @@ import { ApiKeySettings } from "./api-key-settings";
 import { WalletControl } from "./wallet-control";
 import { useState } from "react";
 import { isAddress } from "ethers";
-import { chainName, chainOptionLabel, hasOfficialRoles, supportedChainIds } from "../lib/chains";
+import { chainName, chainOptionLabel, hasOfficialRoles, supportedChainIds, zodiacAppUrl } from "../lib/chains";
 import { shortHex } from "../lib/abi";
 import { formKeys } from "../lib/form-drafts";
 import { useScopeForm } from "../lib/use-scope-form";
@@ -69,9 +69,16 @@ export function ScopePicker({ safe, wallet, mods, modsLoading, modsError, onSele
         </button>;
       })}</div>
       {!loading && !error && shownMods.length === 0 && <div className="empty-state compact"><h3>No indexed role configurations</h3><p>This lookup does not prove that no module exists on chain. Initialize only if you intend to create a new Roles instance.</p></div>}
-      {canInitialize ? <button className="button primary" onClick={onSetUp}>{shownMods.length ? "Initialize another Roles instance" : "Initialize RBAC"}</button>
-        : selected && !hasOfficialRoles(selected.chainId) ? <p className="inline-empty">The official Roles contract is not deployed on {chainName(selected.chainId)}, so a new Roles instance cannot be set up here.</p>
-        : <p className="inline-empty">To initialize this Safe, open SafeRoles inside it or connect a Safe-aware wallet with this Safe selected.</p>}
+      {selected && !hasOfficialRoles(selected.chainId)
+        ? <p className="inline-empty">The official Roles contract is not deployed on {chainName(selected.chainId)}, so a new Roles instance cannot be set up here.</p>
+        : selected && <div className="official-init">
+          <b>New here? Initialize in the official Zodiac app</b>
+          <p>It runs inside Safe, is maintained by Gnosis Guild, and deploys and enables the Roles modifier for your Safe. Come back here afterwards to manage roles and permissions.</p>
+          <div>
+            {zodiacAppUrl(selected.chainId) && <a className="button primary" href={zodiacAppUrl(selected.chainId)!} target="_blank" rel="noopener noreferrer">Open Zodiac in Safe ↗</a>}
+            {canInitialize && <button className="button ghost" onClick={onSetUp}>{shownMods.length ? "Set up another instance here" : "Set up here instead"}</button>}
+          </div>
+        </div>}
       <button className="button ghost" onClick={() => setChooseAnother(true)}>Choose another Safe</button>
     </>}
     {wallet.error && <p className="error-text">{wallet.error}</p>}

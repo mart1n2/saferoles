@@ -2,8 +2,16 @@ import { Interface } from "ethers";
 /** First-role setup is planned only for a new, unoccupied deterministic proxy. */
 import { buildSetupPlan, APPROVED_ROLES_MASTERCOPY } from "./setup-roles";
 import { toSdkState } from "./policy-codec";
-import { buildPlan } from "./policy-plan";
+import { buildPlan, withUnwrappers } from "./policy-plan";
+import { MULTISEND_SELECTOR, MULTISEND_UNWRAPPER, findUnwrapTarget, unwrapperKey } from "./unwrappers";
 import type { DraftRole } from "./policy";
+
+/**
+ * Batches the new modifier supports from day one, as the official Zodiac app does:
+ * both Safe MultiSend 1.4.1 contracts, so a Safe can send role members batches
+ * that are checked call by call.
+ */
+export const INITIAL_UNWRAPPERS = ["multisend-141", "multisend-callonly-141"] as const;
 
 export function buildInitializationPlan({ safeAddress, saltNonce, chainId, role }: {
   safeAddress: string; saltNonce: string; chainId: number; role: DraftRole;
@@ -13,13 +21,20 @@ export function buildInitializationPlan({ safeAddress, saltNonce, chainId, role 
   if (!role.name.trim()) issues.push({ message: "Give the first role a name." });
   if (!role.members.length) issues.push({ message: "Add at least one member to the first role." });
   if (!role.permissions.length) issues.push({ message: "Add at least one permission to the first role." });
-  const policy = buildPlan({ rolesMod: setup.predictedAddress, current: { roles: [], allowances: [] }, desired: state, issues });
+  const policy = withUnwrappers(
+    buildPlan({ rolesMod: setup.predictedAddress, current: { roles: [], allowances: [] }, desired: state, issues }),
+    setup.predictedAddress,
+    chainId,
+    INITIAL_UNWRAPPERS,
+  );
   if (policy.risk === "Critical") policy.issues.push({ message: "Delegatecall permissions are blocked. Remove them before initializing." });
   return {
     ...setup,
     issues: policy.issues,
     changes: policy.changes,
-    transactions: policy.issues.length ? [] : [...setup.transactions, ...policy.transactions],
+    // Order matters if a wallet has to confirm calls one by one: deploy, configure,
+    // and enable last, so an interrupted run never leaves an enabled, half-configured module.
+    transactions: policy.issues.length ? [] : [setup.transactions[0]!, ...policy.transactions, setup.transactions[1]!],
   };
 }
 
@@ -43,6 +58,16 @@ export async function verifyInitialization({ safeAddress, modifierAddress, getCo
     return String(abi.decodeFunctionResult(name, raw)[0]);
   }));
   if (reads.some(address => address.toLowerCase() !== safeAddress.toLowerCase())) throw new Error("The modifier owner, avatar or target does not match this Safe.");
+  const unwrappers = new Interface(["function unwrappers(bytes32) view returns (address)"]);
+  for (const id of INITIAL_UNWRAPPERS) {
+    const target = findUnwrapTarget(id)!;
+    const contract = target.contract(0);
+    if (!contract) continue;
+    const raw = await readContract(modifierAddress, unwrappers.encodeFunctionData("unwrappers", [unwrapperKey(contract, MULTISEND_SELECTOR)]));
+    if (!raw || String(unwrappers.decodeFunctionResult("unwrappers", raw)[0]).toLowerCase() !== MULTISEND_UNWRAPPER.toLowerCase()) {
+      throw new Error("The MultiSend unwrapper is not set on the deployed modifier yet.");
+    }
+  }
   const enabled = await readContract(safeAddress, abi.encodeFunctionData("isModuleEnabled", [modifierAddress]));
   if (!enabled || abi.decodeFunctionResult("isModuleEnabled", enabled)[0] !== true) throw new Error("The Roles modifier is not verified as enabled on this Safe.");
 }

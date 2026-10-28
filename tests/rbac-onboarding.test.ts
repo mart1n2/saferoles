@@ -22,10 +22,12 @@ const abi = new Interface([
 test("initialization binds first-role calldata to the address it deploys and enables", () => {
   const plan = buildInitializationPlan({ safeAddress: safe, saltNonce: "10", chainId: 1, role });
   assert.deepEqual(plan.issues, []);
-  assert.ok(plan.transactions.length > 2);
-  assert.equal(abi.parseTransaction({ data: plan.transactions[1].data })!.args.module, plan.predictedAddress);
-  for (const tx of plan.transactions.slice(2)) assert.equal(tx.to.toLowerCase(), plan.predictedAddress.toLowerCase());
-  const calls = plan.transactions.slice(2).map(tx => abi.parseTransaction({ data: tx.data }));
+  assert.ok(plan.transactions.length > 4);
+  // Deploy first, configure in between, enable the module last.
+  assert.equal(abi.parseTransaction({ data: plan.transactions.at(-1)!.data })!.args.module, plan.predictedAddress);
+  const middle = plan.transactions.slice(1, -1);
+  for (const tx of middle) assert.equal(tx.to.toLowerCase(), plan.predictedAddress.toLowerCase());
+  const calls = middle.map(tx => abi.parseTransaction({ data: tx.data }));
   const membership = calls.find(call => call?.name === "assignRoles")!;
   assert.equal(membership.args.module.toLowerCase(), member);
   assert.equal(membership.args.roleKeys[0], encodeKey("ops"));
@@ -34,7 +36,7 @@ test("initialization binds first-role calldata to the address it deploys and ena
   assert.equal(grant.args.selector, new Interface(["function deposit()"]).getFunction("deposit")!.selector);
   const other = buildInitializationPlan({ safeAddress: safe, saltNonce: "11", chainId: 1, role });
   assert.notEqual(other.predictedAddress, plan.predictedAddress);
-  assert.ok(other.transactions.slice(2).every(tx => tx.to.toLowerCase() === other.predictedAddress.toLowerCase()));
+  assert.ok(other.transactions.slice(1, -1).every(tx => tx.to.toLowerCase() === other.predictedAddress.toLowerCase()));
 });
 
 test("incomplete first roles and delegatecall never produce a submittable setup batch", () => {
@@ -71,11 +73,13 @@ test("execution verification rejects absent code, wrong implementation, wrong wi
   const { verifyInitialization } = await import("../app/lib/initialization");
   const { APPROVED_ROLES_MASTERCOPY } = await import("../app/lib/setup-roles");
   const expected = `0x363d3d373d3d3d363d73${APPROVED_ROLES_MASTERCOPY.slice(2).toLowerCase()}5af43d82803e903d91602b57fd5bf3`;
-  const view = new Interface(["function owner() view returns (address)", "function avatar() view returns (address)", "function target() view returns (address)", "function isModuleEnabled(address) view returns (bool)"]);
-  const check = (code: string | null, wrongField = "", enabled = true) => verifyInitialization({
+  const view = new Interface(["function owner() view returns (address)", "function avatar() view returns (address)", "function target() view returns (address)", "function isModuleEnabled(address) view returns (bool)", "function unwrappers(bytes32) view returns (address)"]);
+  const adapter = "0xB4Cd4bb764C089f20DA18700CE8bc5e49F369efD";
+  const check = (code: string | null, wrongField = "", enabled = true, unwrapper = adapter) => verifyInitialization({
     safeAddress: safe, modifierAddress: target, getCode: async () => code,
     readContract: async (to, data) => {
       const fn = view.parseTransaction({ data })!.name;
+      if (fn === "unwrappers") return view.encodeFunctionResult(fn, [unwrapper]);
       assert.equal(to, fn === "isModuleEnabled" ? safe : target);
       return view.encodeFunctionResult(fn, [fn === "isModuleEnabled" ? enabled : fn === wrongField ? member : safe]);
     },
@@ -86,6 +90,7 @@ test("execution verification rejects absent code, wrong implementation, wrong wi
   }
   for (const field of ["owner", "avatar", "target"]) await assert.rejects(check(expected, field), /does not match/);
   await assert.rejects(check(expected, "", false), /not verified as enabled/);
+  await assert.rejects(check(expected, "", true, "0x0000000000000000000000000000000000000000"), /unwrapper is not set/);
   await assert.rejects(verifyInitialization({ safeAddress: safe, modifierAddress: target, getCode: async () => expected, readContract: async () => null }), /Could not read/);
 });
 
@@ -96,4 +101,12 @@ test("older saved drafts acquire key locks from the current indexed baseline", (
   assert.equal(restored.roles[0].deployedKey, encodeKey("ops"));
   const fresh = lockDeployedRoleKeys({ ...policy, roles: [{ ...role, key: "new_role" }] }, baseline);
   assert.equal(fresh.roles[0].deployedKey, undefined);
+});
+
+test("initialization also installs the official unwrapper for both MultiSend contracts", () => {
+  const plan = buildInitializationPlan({ safeAddress: safe, saltNonce: "12", chainId: 1, role });
+  const unwrap = new Interface(["function setTransactionUnwrapper(address to, bytes4 selector, address adapter)"]);
+  const calls = plan.transactions.slice(1, -1).filter(tx => tx.data.startsWith(unwrap.getFunction("setTransactionUnwrapper")!.selector)).map(tx => unwrap.decodeFunctionData("setTransactionUnwrapper", tx.data));
+  assert.deepEqual(calls.map(call => call[0]), ["0x38869bf66a61cF6bDB996A6aE40D5853Fd43B526", "0x9641d764fc13c8B624c04430C7356C1C7C8102e2"]);
+  assert.ok(calls.every(call => call[2] === "0xB4Cd4bb764C089f20DA18700CE8bc5e49F369efD" && call[1] === "0x8d80ff0a"));
 });
