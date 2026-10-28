@@ -808,11 +808,30 @@ export default function Home() {
                       + Add allowance
                     </button>
                   </div>
+                  <details className="how-to" open={draft.allowances.length === 0}>
+                    <summary>How allowances work</summary>
+                    <p>
+                      An allowance is a shared spending budget. It does nothing until a permission
+                      points at it, and then every call by a member of that role spends from it.
+                      When the budget runs out, further calls are denied until it refills.
+                    </p>
+                    <p><b>Example: let the bot move at most 1,000 USDC per day</b></p>
+                    <ol>
+                      <li>Add an allowance named <code>usdc_daily</code>. USDC has 6 decimals, so 1,000 USDC is <code>1000000000</code>. Set Available now, Ceiling and Refill amount to that, and the period to Daily.</li>
+                      <li>Open the role&apos;s <code>transfer</code> permission on the USDC contract and add a condition on <b>value</b>: <b>Within allowance</b> → <code>usdc_daily</code>.</li>
+                      <li>Review and submit. Allowances are shared by the whole modifier, so the same budget can cap several permissions or roles together.</li>
+                    </ol>
+                  </details>
                   <div className="allowance-list">
                     {draft.allowances.map((allowance) => (
                       <AllowanceEditor
                         key={allowance.id}
                         allowance={allowance}
+                        usedBy={draft.roles.flatMap((role) =>
+                          role.permissions
+                            .filter((permission) => permission.conditions.some((condition) => condition.operator === "withinAllowance" && condition.value === allowance.key && allowance.key))
+                            .map((permission) => `${role.name || role.key}: ${permission.name || permission.signatureLabel || permission.signature || shortHex(permission.targetAddress)}`),
+                        )}
                         onChange={(update) => editAllowance(allowance.id, update)}
                         onRemove={() =>
                           policy.setDraft((current) => ({
@@ -826,8 +845,9 @@ export default function Home() {
                     ))}
                     {draft.allowances.length === 0 && (
                       <div className="empty-state compact">
-                        <h3>No allowances</h3>
-                        <p>Add one to cap cumulative spending independently of call frequency.</p>
+                        <h3>No allowances yet</h3>
+                        <p>Add one to cap how much a role can spend over time, for example 1,000 USDC per day. Without one, a permission can only limit each single call.</p>
+                        <button className="button secondary" onClick={addAllowance}>+ Add allowance</button>
                       </div>
                     )}
                   </div>

@@ -46,6 +46,18 @@ export const conditionOperatorLabels: Record<ConditionOperator, string> = {
   lte: "At most",
 };
 
+/** One-line meaning of each operator, shown next to the condition it belongs to. */
+export const conditionOperatorHelp: Record<ConditionOperator, string> = {
+  pass: "This parameter is not checked: any value is allowed.",
+  eq: "The call is allowed only if this parameter is exactly the value you enter, e.g. one approved recipient.",
+  avatar: "The parameter must be the Safe itself, e.g. tokens may only be sent back to the Safe.",
+  withinAllowance: "The amount is spent from a shared budget (see the Allowances tab). Calls are denied once it runs out.",
+  gt: "The parameter must be strictly larger than the value you enter.",
+  gte: "The parameter must be the value you enter or larger.",
+  lt: "The parameter must be strictly smaller than the value you enter.",
+  lte: "The parameter must be the value you enter or smaller, e.g. a per-call maximum.",
+};
+
 export type DraftCondition = {
   id: string;
   /** Zero-based position of the function parameter this constrains. */

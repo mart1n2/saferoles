@@ -3,7 +3,7 @@ import { isAddress } from "ethers";
 import { parseSignature, shortHex } from "./lib/abi";
 import { useAbi } from "./lib/use-abi";
 import type { ResolvedAbi } from "./lib/abi-source";
-import { conditionOperatorLabels, conditionOperators, isValuelessOperator, type ConditionOperator, type DraftAllowance, type DraftPermission } from "./lib/policy";
+import { conditionOperatorHelp, conditionOperatorLabels, conditionOperators, isValuelessOperator, type ConditionOperator, type DraftAllowance, type DraftPermission } from "./lib/policy";
 import { adoptSignature } from "./lib/policy-codec";
 import { draftPermissionRisk, riskReason } from "./lib/policy-plan";
 const nextId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
@@ -199,6 +199,11 @@ export function PermissionInspector({
             />
             May delegatecall
           </label>
+          <small className="field-help">
+            <b>Send value</b> lets the call attach ETH. Leave it off for token calls such as
+            transfer or approve. <b>Delegatecall</b> runs the target&apos;s code with the Safe&apos;s
+            own storage and balances; it is critical risk and SafeRoles will not submit it.
+          </small>
         </div>
 
         {permission.mode === "function" && (
@@ -515,6 +520,12 @@ export function PermissionInspector({
                         }
                       />
                     )}
+                    <small className="field-help condition-help">
+                      {conditionOperatorHelp[condition.operator]}
+                      {condition.operator === "withinAllowance" && allowances.length === 0 && (
+                        <> No allowance exists yet: create one in the <b>Allowances</b> tab first.</>
+                      )}
+                    </small>
                     <button
                       className="row-remove"
                       aria-label={`Remove condition ${index + 1}`}
