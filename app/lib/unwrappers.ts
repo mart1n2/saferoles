@@ -33,9 +33,19 @@ export type UnwrapTarget = {
   contract: (chainId: number) => `0x${string}` | null;
 };
 
+/**
+ * Bundler3 per chain, limited to the chains where the official MorphoBundler3Unwrapper
+ * exists. Ethereum and Base match the official Roles app; the rest come from Morpho's
+ * addresses page and were confirmed on chain (code present, `initiator()` answers).
+ */
 const MORPHO_BUNDLER3: Record<number, `0x${string}`> = {
   1: "0x6566194141eefa99Af43Bb5Aa71460Ca2Dc90245",
+  100: "0x2AC3ea771547926D4714078e807eFbeF70D0997f",
+  137: "0x2d9C3A9E67c966C711208cc78b34fB9E9f8db589",
+  4326: "0xf53D4c8f0f83F697CD6bB303567400cCf411aA63",
   8453: "0x6BFd8137e702540E7A42B74178A4a49Ba43920C4",
+  57073: "0x7db0F1E2bf1f47ec82220090F388d75D8B9BB6BC",
+  747474: "0xA8C5e23C9C0DF2b6fF716486c6bBEBB6661548C8",
 };
 
 export const UNWRAP_TARGETS: readonly UnwrapTarget[] = [
@@ -58,7 +68,7 @@ export const UNWRAP_TARGETS: readonly UnwrapTarget[] = [
   {
     id: "morpho-bundler3",
     label: "Morpho Bundler3",
-    explanation: "Morpho's batching contract, used to supply, borrow, repay and swap in one transaction.",
+    explanation: "Morpho's batching contract, used to supply, borrow, repay and swap in one transaction. Morpho has since deprecated Bundler3 in favour of its newer Bundles; existing Bundler3 deployments stay live, and this only matters if your bot still uses it.",
     selector: MORPHO_MULTICALL_SELECTOR,
     adapter: MORPHO_BUNDLER3_UNWRAPPER,
     contract: (chainId) => MORPHO_BUNDLER3[chainId] ?? null,

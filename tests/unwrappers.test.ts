@@ -28,7 +28,8 @@ test("status is read from the chain for each target",async()=>{
   assert.equal((await readUnwrapperStates(1,reader(MULTISEND_UNWRAPPER)))["multisend-141"]!.status,"enabled");
   assert.equal((await readUnwrapperStates(1,reader(LEGACY_MULTISEND_UNWRAPPER)))["multisend-141"]!.status,"legacy");
   assert.equal((await readUnwrapperStates(1,reader(zero,false)))["multisend-141"]!.status,"unavailable");
-  assert.equal((await readUnwrapperStates(137,reader(zero)))["morpho-bundler3"]!.status,"unavailable");
+  assert.equal((await readUnwrapperStates(137,reader(zero)))["morpho-bundler3"]!.status,"missing");
+  assert.equal((await readUnwrapperStates(56,reader(zero)))["morpho-bundler3"]!.status,"unavailable");
 });
 test("enabling plans an owner call to the modifier with the official adapter only",()=>{
   const plan=withUnwrappers(empty,rolesMod,1,["morpho-bundler3","multisend-141","unknown"]);
@@ -39,7 +40,8 @@ test("enabling plans an owner call to the modifier with the official adapter onl
   assert.equal(decoded[2],UNWRAP_TARGETS.find(t=>t.id==="morpho-bundler3")!.adapter);
   assert.equal(plan.changes[0]!.action,"Batching");
   assert.equal(plan.risk,"Medium");
-  assert.equal(unwrapCallFor("morpho-bundler3",137),null);
+  assert.equal(unwrapCallFor("morpho-bundler3",56),null);
+  assert.equal(unwrapCallFor("morpho-bundler3",137)!.to,"0x2d9C3A9E67c966C711208cc78b34fB9E9f8db589");
   assert.equal(withUnwrappers(empty,rolesMod,1,undefined),empty);
   assert.equal(encodeUnwrapCall(unwrapCallFor("multisend-141",1)!).slice(0,10),i.getFunction("setTransactionUnwrapper")!.selector);
 });
