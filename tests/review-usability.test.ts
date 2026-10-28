@@ -23,3 +23,10 @@ test("a never-started permission is neither an error nor a request",()=>{
   const half:DraftPolicy={...draft,roles:[{...draft.roles[0]!,permissions:[{...blank,signature:"transfer(address,uint256)"}]}]};
   assert.ok(toSdkState(half).issues.length>0);
 });
+import { chainOptionLabel, hasOfficialRoles } from "../app/lib/chains";
+test("a network without the official Roles contract is flagged, others are not",()=>{
+  assert.equal(hasOfficialRoles(1101),false);
+  assert.equal(hasOfficialRoles(1),true);
+  assert.match(chainOptionLabel(1101),/no official Roles contract/);
+  assert.doesNotMatch(chainOptionLabel(8453),/no official/);
+});

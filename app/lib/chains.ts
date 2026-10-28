@@ -36,3 +36,19 @@ export function safeTransactionUrl(
   if (!prefix) return null;
   return `https://app.safe.global/transactions/tx?safe=${prefix}:${safeAddress}&id=multisig_${safeAddress}_${safeTxHash}`;
 }
+
+/**
+ * Networks the SDK lists but where the pinned official Roles mastercopy has no code
+ * (checked on three RPCs for Polygon zkEVM, whose ModuleProxyFactory exists). Existing
+ * configurations can still be looked up; new ones cannot be set up there.
+ */
+const NO_OFFICIAL_ROLES: ReadonlySet<number> = new Set([1101]);
+
+export function hasOfficialRoles(chainId: number): boolean {
+  return !NO_OFFICIAL_ROLES.has(chainId);
+}
+
+/** Network name for a picker, flagged when setup is impossible there. */
+export function chainOptionLabel(chainId: number): string {
+  return hasOfficialRoles(chainId) ? chainName(chainId) : `${chainName(chainId)} (no official Roles contract)`;
+}

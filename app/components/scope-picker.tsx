@@ -2,7 +2,7 @@ import { ApiKeySettings } from "./api-key-settings";
 import { WalletControl } from "./wallet-control";
 import { useState } from "react";
 import { isAddress } from "ethers";
-import { chainName, supportedChainIds } from "../lib/chains";
+import { chainName, chainOptionLabel, hasOfficialRoles, supportedChainIds } from "../lib/chains";
 import { shortHex } from "../lib/abi";
 import { formKeys } from "../lib/form-drafts";
 import { useScopeForm } from "../lib/use-scope-form";
@@ -30,7 +30,7 @@ export function ScopePicker({ safe, wallet, mods, modsLoading, modsError, onSele
   const shownMods = lookup ? discovered.mods : mods;
   const loading = lookup ? discovered.loading : modsLoading;
   const error = lookup ? discovered.error : modsError;
-  const canInitialize = Boolean(onSetUp && selected && activeSafe && selected.address.toLowerCase() === activeSafe.toLowerCase() && selected.chainId === activeChain);
+  const canInitialize = Boolean(onSetUp && selected && hasOfficialRoles(selected.chainId) && activeSafe && selected.address.toLowerCase() === activeSafe.toLowerCase() && selected.chainId === activeChain);
 
   return <main className="app-shell scope-page">
     <header className="scope-topbar">
@@ -47,8 +47,8 @@ export function ScopePicker({ safe, wallet, mods, modsLoading, modsError, onSele
         <div className="scope-panel-heading"><h2>{selected && !chooseAnother ? "Role configurations" : "Choose a Safe"}</h2><p>Open an existing configuration or initialize RBAC with your first role.</p></div>
     {(!selected || chooseAnother) ? <div className="connection-fields">
       <label className="modal-field"><span>Network</span><select value={chainId} onChange={event => setChainId(Number(event.target.value))}>
-        {supportedChainIds.map(id => <option value={id} key={id}>{chainName(id)}</option>)}
-      </select></label>
+        {supportedChainIds.map(id => <option value={id} key={id}>{chainOptionLabel(id)}</option>)}
+      </select>{!hasOfficialRoles(chainId) && <small className="field-help">The official Roles contract is not deployed here. You can look up existing configurations, but not set up a new one.</small>}</label>
       <label className="modal-field"><span>Safe address</span><input className="mono-input" value={address} placeholder="0x…" onChange={event => setAddress(event.target.value.trim())} />
         <small>Look up indexed Roles configurations by Safe address. Connecting a wallet is only needed to submit changes.</small>
       </label>
@@ -70,6 +70,7 @@ export function ScopePicker({ safe, wallet, mods, modsLoading, modsError, onSele
       })}</div>
       {!loading && !error && shownMods.length === 0 && <div className="empty-state compact"><h3>No indexed role configurations</h3><p>This lookup does not prove that no module exists on chain. Initialize only if you intend to create a new Roles instance.</p></div>}
       {canInitialize ? <button className="button primary" onClick={onSetUp}>{shownMods.length ? "Initialize another Roles instance" : "Initialize RBAC"}</button>
+        : selected && !hasOfficialRoles(selected.chainId) ? <p className="inline-empty">The official Roles contract is not deployed on {chainName(selected.chainId)}, so a new Roles instance cannot be set up here.</p>
         : <p className="inline-empty">To initialize this Safe, open SafeRoles inside it or connect a Safe-aware wallet with this Safe selected.</p>}
       <button className="button ghost" onClick={() => setChooseAnother(true)}>Choose another Safe</button>
     </>}
@@ -97,7 +98,7 @@ function ScopeForm({
         <select value={chainId} onChange={(event) => setChainId(Number(event.target.value))}>
           {supportedChainIds.map((id) => (
             <option key={id} value={id}>
-              {chainName(id)}
+              {chainOptionLabel(id)}
             </option>
           ))}
         </select>

@@ -18,7 +18,7 @@ import { PermissionInspector } from "./permission-inspector";
 import { buildInitializationPlan, suggestRoleKey, verifyInitialization } from "./lib/initialization";
 import type { DraftRole } from "./lib/policy";
 import { shortHex } from "./lib/abi";
-import { chainName } from "./lib/chains";
+import { chainName, hasOfficialRoles } from "./lib/chains";
 import type { ResolvedAbi } from "./lib/abi-source";
 import {
   submissionReferences,
@@ -309,6 +309,7 @@ function SetupForm({
 
   const ready = Boolean(
     plan &&
+      hasOfficialRoles(chainId) &&
       plan.issues.length === 0 &&
       submitter &&
       submitter.chainId === chainId &&
@@ -318,6 +319,7 @@ function SetupForm({
   );
 
   const blockers:string[]=[];
+  if(!hasOfficialRoles(chainId))blockers.push(`The official Roles contract is not deployed on ${chainName(chainId)}, so a new Roles instance cannot be set up here.`);
   if(!plan)blockers.push("The role configuration could not be prepared.");
   else if(plan.issues.length)blockers.push(...plan.issues.map(issue=>issue.message));
   if(!submitter)blockers.push("Open this Safe in Safe, or connect a wallet with the Safe account selected.");
@@ -455,6 +457,16 @@ function SetupForm({
                 Keep editing
               </button>
             </div>
+          </div>
+        )}
+
+        {!hasOfficialRoles(chainId) && (
+          <div className="guardrail-callout critical" role="alert">
+            <b>No official Roles contract on {chainName(chainId)}</b>
+            <p>
+              SafeRoles only deploys the audited official Roles implementation, and it has no code on this
+              network, so setup cannot continue. Use another network, or look up an existing configuration instead.
+            </p>
           </div>
         )}
 
