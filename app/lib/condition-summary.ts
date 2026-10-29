@@ -1,5 +1,6 @@
 import { Operator, type Condition } from "zodiac-roles-sdk";
-import { shortHex } from "./abi";
+import { parseSignature, shortHex } from "./abi";
+import { AbiCoder, formatUnits, type ParamType } from "ethers";
 
 const names: Record<number, string> = {
   [Operator.And]: "all of",
@@ -36,17 +37,65 @@ export function shortWord(value: string | undefined): string {
  * Plain-language constraints of a deployed condition, one per argument, so a
  * permission can be reviewed from the list without opening it.
  */
-export function summarizeCondition(condition: Condition | undefined): string[] {
+export function summarizeCondition(condition: Condition | undefined, context: ConditionSummaryContext = {}): string[] {
+  return conditionSummaryDetails(condition, context).map((line) => line.text);
+}
+
+export type ConditionSummaryContext = { signature?: string; token?: { decimals: number; symbol: string } | null };
+export type ConditionSummaryLine = { text: string; title: string };
+
+/** Only standard ERC-20 amount positions; an arbitrary uint may be an id or timestamp. */
+export function tokenAmountIndex(signature: string | undefined): number | null {
+  if (!signature) return null;
+  try {
+    const canonical = parseSignature(signature).canonical;
+    if (canonical === "approve(address,uint256)" || canonical === "transfer(address,uint256)") return 1;
+    if (canonical === "transferFrom(address,address,uint256)") return 2;
+    return null;
+  } catch { return null; }
+}
+
+export function conditionParameterName(signature: string | undefined, index: number): string {
+  try { return parseSignature(signature ?? "").params[index]?.name || `arg ${index}`; }
+  catch { return `arg ${index}`; }
+}
+
+function groupedAmount(value: string): string {
+  const [whole, fraction] = value.split(".");
+  const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction && !/^0+$/.test(fraction) ? `${grouped}.${fraction}` : grouped;
+}
+
+/** Names and amounts are presentation only: exact operators and words remain intact. */
+export function conditionSummaryDetails(condition: Condition | undefined, context: ConditionSummaryContext = {}): ConditionSummaryLine[] {
   if (!condition) return [];
+  let params: readonly ParamType[] = [];
+  try { params = parseSignature(context.signature ?? "").params; } catch { /* Unknown ABI: retain positional labels and base units. */ }
+  const amountIndex = tokenAmountIndex(context.signature);
   const args = condition.operator === Operator.Matches ? condition.children ?? [] : [condition];
-  const lines: string[] = [];
-  args.forEach((child, index) => {
-    if (child.operator === Operator.Pass) return;
-    const label = `arg ${index}`;
+  return args.flatMap((child, index) => {
+    if (child.operator === Operator.Pass) return [];
+    const label = params[index]?.name || `arg ${index}`;
     const verb = names[child.operator] ?? `operator ${child.operator}`;
-    if (child.operator === Operator.EqualTo) lines.push(`${label} = ${shortWord(child.compValue)}`);
-    else if (child.operator === Operator.GreaterThan || child.operator === Operator.LessThan || child.operator === Operator.SignedIntGreaterThan || child.operator === Operator.SignedIntLessThan) lines.push(`${label} ${verb} ${shortWord(child.compValue)}`);
-    else lines.push(`${label} ${verb}`);
+    const comparable = [Operator.EqualTo, Operator.GreaterThan, Operator.LessThan, Operator.SignedIntGreaterThan, Operator.SignedIntLessThan].includes(child.operator);
+    if (!comparable || !child.compValue) return [{ text: `${label} ${verb}`, title: `Exact deployed condition: ${JSON.stringify(child)}` }];
+    let shown = shortWord(child.compValue);
+    let exact: string = child.compValue;
+    const param = params[index];
+    try {
+      if (param && (param.type === "address" || param.type === "bool" || /^(u?int)\d+$/.test(param.type))) {
+        const decoded = AbiCoder.defaultAbiCoder().decode([param.type], child.compValue)[0];
+        exact = String(decoded);
+        shown = param.type === "address" ? shortHex(exact) : exact;
+        if (index === amountIndex && context.token && typeof decoded === "bigint" && decoded >= 0n && Number.isInteger(context.token.decimals) && context.token.decimals >= 0 && context.token.decimals <= 36) {
+          const token = context.token;
+          const quantity = groupedAmount(formatUnits(decoded, token.decimals));
+          const abbreviated = decoded > 1_000_000_000n * (10n ** BigInt(token.decimals));
+          shown = `${abbreviated ? "∞" : quantity} ${token.symbol}`;
+          exact = `${quantity} ${token.symbol} (${decoded} base units; ${token.decimals} decimals)${abbreviated ? ". ∞ abbreviates amounts above 1 billion tokens; this exact constraint still applies" : ""}`;
+        }
+      }
+    } catch { /* Malformed or unsupported values stay raw. */ }
+    return [{ text: `${label} ${verb} ${shown}`, title: `${label} ${verb} ${exact}. Display only; the deployed condition is preserved.` }];
   });
-  return lines;
 }

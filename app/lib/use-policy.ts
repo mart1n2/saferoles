@@ -91,6 +91,8 @@ export type PolicyState = {
   current: SdkState | null;
   baseHash: string | null;
   draft: DraftPolicy | null;
+  /** The draft as first loaded, for marking what has changed. */
+  baseline: DraftPolicy | null;
   plan: Plan;
   dirty: boolean;
   load: (scope: Scope) => Promise<void>;
@@ -328,6 +330,8 @@ export function usePolicy(): PolicyState {
     [draft, pristine],
   );
 
+  const baseline = useMemo(() => (pristine ? (JSON.parse(pristine) as DraftPolicy) : null), [pristine]);
+
   const workingKey = scope ? formKeys.policy(scope.chainId, scope.rolesMod) : null;
 
   // Debounced autosave of the current diff. Only changes are stored; the
@@ -394,6 +398,7 @@ export function usePolicy(): PolicyState {
     current,
     baseHash,
     draft,
+    baseline,
     plan,
     dirty,
     load,

@@ -2,6 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { isAddress } from "ethers";
 import { parseSignature, shortHex } from "./lib/abi";
 import { useAbi } from "./lib/use-abi";
+import { useContractLabel } from "./lib/use-contract-label";
+import { useTokenMetadata } from "./lib/use-token-metadata";
+import { useLocalContracts } from "./lib/use-local-contracts";
+import { normalizeContractAddress } from "./lib/contract-labels";
+import { ContractName } from "./components/contract-name";
+import { FunctionPicker } from "./components/function-picker";
 import type { ResolvedAbi } from "./lib/abi-source";
 import { conditionOperatorHelp, conditionOperatorLabels, conditionOperators, isValuelessOperator, type ConditionOperator, type DraftAllowance, type DraftPermission } from "./lib/policy";
 import { adoptSignature } from "./lib/policy-codec";
@@ -17,10 +23,6 @@ function readableFor(
     (entry) => entry.signature === permission.signature,
   );
   return declared?.readable ?? permission.signatureLabel ?? permission.signature;
-}
-
-function matchesFunction(readable: string, filter: string): boolean {
-  return !filter.trim() || readable.toLowerCase().includes(filter.trim().toLowerCase());
 }
 
 export function PermissionInspector({
@@ -44,9 +46,13 @@ export function PermissionInspector({
   const [showManualAbi, setShowManualAbi] = useState(false);
   const [manualAbi, setManualAbi] = useState("");
   const [manualError, setManualError] = useState<string | null>(null);
-  const [functionFilter, setFunctionFilter] = useState("");
 
   const abi = useAbi(chainId, permission.targetAddress);
+  const contractLabel = useContractLabel(chainId, permission.targetAddress);
+  const token = useTokenMetadata(chainId, permission.targetAddress);
+  const savedContracts = useLocalContracts(chainId);
+  const labelValue = contractLabel.value ?? permission.name;
+  const automaticName = (token.data?.hasSymbol ? token.data.symbol : null) || abi.abi?.name;
 
   // An imported permission is identified only by selector; the signature has to
   // be supplied and verified before its condition can be shown or edited.
@@ -126,22 +132,40 @@ export function PermissionInspector({
       <div className="inspector-heading">
         <div>
           <span className="eyebrow">Permission</span>
-          <h3>{permission.name || shortHex(permission.targetAddress) || "New permission"}</h3>
+          <h3>{labelValue.trim() || automaticName || shortHex(permission.targetAddress) || "New permission"}</h3>
         </div>
         <span className={`risk-badge ${risk.toLowerCase()}`}>{risk}</span>
       </div>
 
+      {savedContracts.contracts.length > 0 && <label className="saved-contract-picker">
+        <span>Saved contract</span>
+        <select aria-label="Saved contract" value={savedContracts.contracts.find((entry) => entry.address.toLowerCase() === permission.targetAddress.toLowerCase())?.address ?? ""} onChange={(event) => {
+          if (!event.target.value) return;
+          const targetAddress = event.target.value;
+          onChange((current) => ({ ...current, targetAddress, name: "" }));
+        }}>
+          <option value="">Choose from your local whitelist</option>
+          {savedContracts.contracts.map((entry) => <option value={entry.address} key={entry.address}><ContractName chainId={chainId} address={entry.address} label={entry.label}/> · {shortHex(entry.address)}</option>)}
+        </select>
+        <small>Manage this list in Roles config → Contracts. Selecting an address does not submit a permission.</small>
+      </label>}
       <div className="field-grid">
         <label>
-          <span>Label</span>
+          <span>Contract label <small>(optional)</small></span>
           <input
-            value={permission.name}
-            placeholder="e.g. USDC"
-            onChange={(event) =>
-              onChange((current) => ({ ...current, name: event.target.value }))
-            }
+            aria-label="Contract label"
+            maxLength={256}
+            value={labelValue}
+            placeholder={automaticName || "e.g. Treasury vault"}
+            onChange={(event) => {
+              const value = event.target.value;
+              onChange((current) => ({ ...current, name: value }));
+              contractLabel.save(value);
+            }}
           />
-          <small>Display only. Never encoded.</small>
+          <small className={contractLabel.error ? "error-text" : undefined} role={contractLabel.error ? "alert" : undefined}>
+            {contractLabel.error || (contractLabel.saving ? "Saving label locally…" : !isAddress(permission.targetAddress.toLowerCase()) ? "Enter a valid target address to save this label locally." : "Custom labels are saved in this browser for this network and contract, including after submission. Leave empty to use the token symbol or verified name.")}
+          </small>
         </label>
         <label>
           <span>Target address</span>
@@ -149,11 +173,20 @@ export function PermissionInspector({
             className="mono-input"
             value={permission.targetAddress}
             placeholder="0x…"
-            onChange={(event) =>
-              onChange((current) => ({ ...current, targetAddress: event.target.value.trim() }))
-            }
+            onChange={(event) => {
+              const value = event.target.value.trim();
+              const changedTarget = isAddress(permission.targetAddress.toLowerCase()) && value.toLowerCase() !== permission.targetAddress.toLowerCase();
+              onChange((current) => ({ ...current, targetAddress: value, name: changedTarget ? "" : current.name }));
+              if (!changedTarget && isAddress(value.toLowerCase()) && permission.name.trim()) contractLabel.save(permission.name, value);
+            }}
+            onBlur={() => {
+              try {
+                const targetAddress = normalizeContractAddress(permission.targetAddress);
+                if (targetAddress !== permission.targetAddress) onChange((current) => ({ ...current, targetAddress }));
+              } catch { /* Leave incomplete addresses editable. */ }
+            }}
           />
-          {permission.targetAddress && !isAddress(permission.targetAddress) && (
+          {permission.targetAddress && !isAddress(permission.targetAddress.toLowerCase()) && (
             <small className="error-text">Enter a complete 20-byte address.</small>
           )}
           <AbiStatusLine
@@ -212,60 +245,25 @@ export function PermissionInspector({
 
             {/* With an ABI, functions are chosen from what the contract actually
                 declares rather than typed from memory. */}
-            {abi.abi && abi.abi.functions.length > 12 && (
-              <input
-                type="search"
-                className="function-filter"
-                aria-label="Filter functions"
-                placeholder={`Search ${abi.abi.functions.length} functions, e.g. transfer`}
-                value={functionFilter}
-                onChange={(event) => setFunctionFilter(event.target.value)}
-              />
-            )}
             {abi.abi && abi.abi.functions.length > 0 && (
-              <select
+              <FunctionPicker
+                functions={abi.abi.functions}
                 value={permission.signature}
-                aria-label="Function"
-                onChange={(event) => {
-                  const chosen = event.target.value;
-                  if (!chosen) return;
+                onSelect={(declared) => {
                   setAdoptNote(null);
-                  const declared = abi.abi?.functions.find(
-                    (entry) => entry.signature === chosen,
-                  );
                   onChange((current) => ({
                     ...current,
-                    signature: chosen,
+                    signature: declared.signature,
                     // Display only; the canonical signature above is what encodes.
-                    signatureLabel: declared?.readable,
+                    signatureLabel: declared.readable,
                     selector: undefined,
                     rawCondition: undefined,
                     // Conditions are positional, so they cannot carry over to a
                     // different function's parameter list.
-                    conditions: current.signature === chosen ? current.conditions : [],
+                    conditions: current.signature === declared.signature ? current.conditions : [],
                   }));
                 }}
-              >
-                <option value="">Select a function…</option>
-                <optgroup label="State-changing">
-                  {abi.abi.functions
-                    .filter((entry) => !entry.readOnly && matchesFunction(entry.readable, functionFilter))
-                    .map((entry) => (
-                      <option key={entry.selector} value={entry.signature}>
-                        {entry.readable}
-                      </option>
-                    ))}
-                </optgroup>
-                <optgroup label="Read-only (granting these achieves nothing)">
-                  {abi.abi.functions
-                    .filter((entry) => entry.readOnly && matchesFunction(entry.readable, functionFilter))
-                    .map((entry) => (
-                      <option key={entry.selector} value={entry.signature}>
-                        {entry.readable}
-                      </option>
-                    ))}
-                </optgroup>
-              </select>
+              />
             )}
 
             {needsSignature && !abi.abi && (

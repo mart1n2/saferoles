@@ -502,7 +502,7 @@ export function parseDraftPolicy(
       const allowance = record(entry, path);
       exactKeys(
         allowance,
-        ["id", "key", "balance", "maxRefill", "refill", "period", "timestamp", "label"],
+        ["id", "key", "balance", "maxRefill", "refill", "period", "timestamp", "label", "amountDecimals", "customInitialBalance"],
         path,
       );
       const id = stringValue(allowance.id, `${path}.id`, 128, { nonempty: true });
@@ -511,6 +511,8 @@ export function parseDraftPolicy(
       return {
         id,
         key: boundedDraftText(allowance.key, `${path}.key`, 512),
+        ...(allowance.amountDecimals === undefined ? {} : { amountDecimals: integer(allowance.amountDecimals, `${path}.amountDecimals`, 0, 36) }),
+        ...(allowance.customInitialBalance === undefined ? {} : { customInitialBalance: booleanValue(allowance.customInitialBalance, `${path}.customInitialBalance`) }),
         balance: boundedDraftText(allowance.balance, `${path}.balance`, 128),
         maxRefill: boundedDraftText(allowance.maxRefill, `${path}.maxRefill`, 128),
         refill: boundedDraftText(allowance.refill, `${path}.refill`, 128),

@@ -1,12 +1,11 @@
 import { ApiKeySettings } from "./components/api-key-settings";
 
 
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { isAddress } from "ethers";
 import { chainName, isSupportedChain } from "./lib/chains";
 import { parseSignature, shortHex } from "./lib/abi";
 import {
-  conditionOperatorLabels,
   type DraftPermission,
 } from "./lib/policy";
 import { PermissionInspector } from "./permission-inspector";
@@ -15,17 +14,21 @@ import { useDiscoveredMods, usePolicy, type Scope } from "./lib/use-policy";
 import { useSafe } from "./lib/use-safe";
 import { useWallet } from "./lib/use-wallet";
 import { useDrafts } from "./lib/use-drafts";
-import { usePolicyEditor, tabs } from "./lib/use-policy-editor";
+import { usePolicyEditor, roleTabs, configTabs } from "./lib/use-policy-editor";
 import { useSubmissionContext } from "./lib/use-submission-context";
 import { isRecoveredPolicyStale } from "./lib/form-drafts";
 import { WalletControl } from "./components/wallet-control";
 import { ActivityPanel } from "./components/activity-panel";
+import { LocalContractsPanel } from "./components/local-contracts-panel";
+import { ModifierNavigation } from "./components/modifier-navigation";
 import { AllowanceEditor } from "./components/allowance-editor";
+import { isExistingAllowance } from "./lib/allowance-amounts";
 import { DraftsDialog } from "./components/drafts-dialog";
 import { ScopePicker } from "./components/scope-picker";
 import { ContractName } from "./components/contract-name";
-import { summarizeCondition } from "./lib/condition-summary";
+import { PermissionConditions } from "./components/permission-conditions";
 import { isBlankPermission } from "./lib/policy-codec";
+import { baselineRoleFor, permissionChange, roleChanged } from "./lib/draft-changes";
 import { UNWRAP_TARGETS } from "./lib/unwrappers";
 import { useUnwrapperStates } from "./lib/use-unwrappers";
 import type { DraftPolicy } from "./lib/policy";
@@ -103,6 +106,8 @@ export default function Home() {
   const wallet = useWallet();
   const policy = usePolicy();
   const { tab, setTab, setSelectedRoleId, newRoleName, setNewRoleName, newMemberAddress, setNewMemberAddress, newMemberLabel, setNewMemberLabel, draft, roles, selectorNames, functionNames, selectedRole, selectedPermission, editRole, editPermission, addRole, addPermission, addMember, addAllowance, editAllowance, setSelectedPermissionId, resetSelection } = usePolicyEditor(policy);
+  const workspaceRef = useRef<HTMLElement>(null);
+  const configOpen = configTabs.some((item) => item === tab);
 
   const [query, setQuery] = useState("");
   const unwrapperStates = useUnwrapperStates(policy.scope?.chainId ?? null, policy.scope?.rolesMod ?? null);
@@ -151,7 +156,7 @@ export default function Home() {
       window.history.replaceState(null,"",url);
       void loadPolicy(scope);
     },
-    [loadPolicy, resetSelection],
+    [loadPolicy, resetSelection, setDraftId, setDraftVersion, setStaleBase, setBaselineNotice, setDeployedModifier],
   );
 
   useEffect(()=>{
@@ -189,7 +194,7 @@ export default function Home() {
       setDraftVersion(saved.version);
       return saved.id;
     },
-    [drafts, policy.baseHash, policy.draft, policy.facts, policy.scope, safe.info],
+    [drafts, policy.baseHash, policy.draft, policy.facts, policy.scope, safe.info, setDraftId, setDraftVersion],
   );
 
   /* ------------------------------- verification -------------------------- */
@@ -277,6 +282,19 @@ export default function Home() {
     setSelectedPermissionId(null);
   };
 
+  const focusWorkspace = () => {
+    requestAnimationFrame(() => {
+      const workspace = workspaceRef.current;
+      if (!workspace) return;
+      if (window.matchMedia("(min-width: 761px)").matches) {
+        workspace.scrollTo({ top: 0, behavior: "instant" });
+      } else {
+        workspace.scrollIntoView({ block: "start", behavior: "instant" });
+      }
+      workspace.focus({ preventScroll: true });
+    });
+  };
+
   const memberDuplicate = Boolean(selectedRole && isAddress(newMemberAddress) && selectedRole.members.some((member) => member.address.toLowerCase() === newMemberAddress.toLowerCase()));
   const memberReady = isAddress(newMemberAddress) && !memberDuplicate;
   const filteredRoles=roles.filter(role=>`${role.name} ${role.key}`.toLowerCase().includes(query.toLowerCase()));
@@ -291,6 +309,7 @@ export default function Home() {
         <button className="button primary" onClick={()=>setShowReview(true)} disabled={plan.changes.length===0 && blockingIssues.length===0} title={plan.changes.length===0 && blockingIssues.length===0?"No changes to review yet":undefined}>{blockingIssues.length?`${blockingIssues.length} to fix`:plan.changes.length?`Review ${plan.changes.length} changes`:"Review"}</button>
       </div>
     </header>
+    <div className="workspace-notices">
     {!verification.ok && submitVia!=="none" && <div className="banner danger" role="alert"><b>This Safe cannot submit these changes</b><ul>{verification.problems.map(problem=><li key={problem}>{problem}</li>)}</ul>{submitVia==="wallet" && wallet.chainId!==policy.scope.chainId && <button className="button secondary" onClick={()=>void wallet.switchChain(policy.scope!.chainId)}>Switch wallet to {chainName(policy.scope.chainId)}</button>}</div>}
 
       {submitVia === "none" && (
@@ -346,22 +365,16 @@ export default function Home() {
       )}
 
       {policy.recovered && (
-        <div className="banner info" role="status">
-          <b>Restored unsaved edits from this browser</b>
-          <p>
-            Changes you had made but not saved as a draft were recovered
-            automatically ({new Date(policy.recovered.savedAt).toLocaleString()}).
-            They stay in this browser and are diffed against the current indexed
-            policy; nothing has been submitted.
-          </p>
-          <div className="banner-actions">
-            <button className="button secondary" onClick={policy.discard}>
-              Discard recovered edits
-            </button>
-            <button className="button ghost" onClick={policy.dismissRecovered}>
-              Keep editing
-            </button>
-          </div>
+        <div className="banner info compact" role="status">
+          <b>Restored unsaved edits</b>
+          <span>
+            Recovered from this browser ({new Date(policy.recovered.savedAt).toLocaleString()}) and
+            compared with the current policy. Nothing has been submitted.
+          </span>
+          <span className="banner-actions">
+            <button className="button ghost" onClick={policy.discard}>Discard</button>
+            <button className="button ghost" onClick={policy.dismissRecovered}>Dismiss</button>
+          </span>
         </div>
       )}
 
@@ -408,15 +421,16 @@ export default function Home() {
       )}
 
       {submitVia === "wallet" && wallet.batchSupport === "sequential" && (
-        <div className="banner info">
-          <b>This wallet confirms each change separately</b>
-          <p>
-            Each planned call will be a separate transaction to confirm, applied one
-            at a time. If you stop partway the policy is left partially updated.
-          </p>
+        <div className="banner info compact">
+          <b>Confirmed one by one</b>
+          <span>
+            This wallet confirms each planned call as a separate transaction; stopping partway
+            leaves the policy partly updated.
+          </span>
         </div>
       )}
 
+    </div>
       <div className="workspace">
         <aside className="role-sidebar">
           <div className="sidebar-heading">
@@ -448,14 +462,17 @@ export default function Home() {
           <div className="role-list">
             {filteredRoles.map((role) => {
               const roleRisk = highestRisk(role.permissions.map(draftPermissionRisk));
+              const roleEdited = roleChanged(baselineRoleFor(policy.baseline, role), role);
               return (
                 <button
                   key={role.id}
-                  className={`role-item ${role.id === selectedRole?.id ? "active" : ""}`}
+                  className={`role-item ${!configOpen && role.id === selectedRole?.id ? "active" : ""}`}
+                  aria-current={!configOpen && role.id === selectedRole?.id ? "page" : undefined}
                   onClick={() => {
                     setSelectedRoleId(role.id);
                     setSelectedPermissionId(null);
                     setTab("Permissions");
+                    focusWorkspace();
                   }}
                 >
                   <span className="role-glyph" aria-hidden="true">
@@ -467,6 +484,7 @@ export default function Home() {
                       {role.members.length} member{role.members.length === 1 ? "" : "s"} ·{" "}
                       {role.permissions.filter((item) => !isBlankPermission(item)).length} permission
                       {role.permissions.filter((item) => !isBlankPermission(item)).length === 1 ? "" : "s"}
+                      {roleEdited && <span className="role-edited"> · Edited</span>}
                     </small>
                   </span>
                   <span className={`risk-dot ${roleRisk.toLowerCase()}`} role="img" aria-label={`Highest permission risk: ${roleRisk}`} title={`Highest permission risk: ${roleRisk}`} />
@@ -482,20 +500,153 @@ export default function Home() {
               </p>
             )}
           </div>
-          <div className="sidebar-foot">
-            <span>Modifier</span>
-            <code title={policy.scope.rolesMod}>{shortHex(policy.scope.rolesMod, 10, 8)}</code>
-            {/* No badge without a submitter: the view-only notice already says so. */}
-            {submitVia !== "none" && (
-              <span className={`health-badge ${verification.ok ? "" : "warn"}`}>
-                {verification.ok ? "Can submit" : "Cannot submit here"}
-              </span>
-            )}
-          </div>
+          <ModifierNavigation
+            address={policy.scope.rolesMod}
+            safeAddress={policy.facts?.avatar ?? null}
+            chainId={policy.scope.chainId}
+            active={configOpen}
+            onOpen={() => { setSelectedPermissionId(null); setTab("Contracts"); focusWorkspace(); }}
+          />
         </aside>
 
-        <section className="role-workspace">
-          {selectedRole ? (
+        <section className="role-workspace" ref={workspaceRef} tabIndex={-1} aria-label={configOpen ? "Roles configuration" : "Role configuration"}>
+          {configOpen ? (
+            <>
+              <div className="breadcrumbs">{chainName(policy.scope.chainId)} <span>/</span> Roles config</div>
+              <header className="role-header"><div><h1>Roles config</h1><p>Local contracts, shared budgets, batch support and proposal activity.</p></div></header>
+              <nav className="tabs" aria-label="Roles configuration sections">
+                {configTabs.map((item) => <button key={item} className={tab === item ? "active" : ""} aria-pressed={tab === item} onClick={() => { setTab(item); focusWorkspace(); }}>{item}{item === "Allowances" && <span>{draft.allowances.length}</span>}</button>)}
+              </nav>
+              {tab === "Contracts" && <LocalContractsPanel chainId={policy.scope.chainId}/>}
+              {tab === "Allowances" && (
+                <section className="single-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <span className="eyebrow">Shared budgets</span>
+                      <h3>Allowances</h3>
+                      <p>
+                        Shared cumulative budgets across calls, roles and members.
+                        Enter token quantities using the selected decimals.
+                      </p>
+                    </div>
+                    {draft.allowances.length > 0 && <button className="button secondary" onClick={addAllowance}>
+                      + Add allowance
+                    </button>}
+                  </div>
+                  <details className="how-to">
+                    <summary>How allowances work</summary>
+                    <p>
+                      An allowance is a shared spending budget. It does nothing until a permission
+                      points at it, and then every call by a member of that role spends from it.
+                      When the budget runs out, further calls are denied until it refills.
+                    </p>
+                    <p><b>Example: let the bot move at most 1,000 USDC per day</b></p>
+                    <ol>
+                      <li>Add an allowance named <code>usdc_daily</code>. Choose 6 decimals for USDC, then enter <code>1000</code> for Budget ceiling and Refill per period, and select Daily. Amounts are converted automatically for submission.</li>
+                      <li>Open the role&apos;s <code>transfer</code> permission on the USDC contract and add a condition on <b>value</b>: <b>Within allowance</b> → <code>usdc_daily</code>.</li>
+                      <li>Review and submit. Allowances are shared by the whole modifier, so the same budget can cap several permissions or roles together.</li>
+                    </ol>
+                  </details>
+                  <div className="allowance-list">
+                    {draft.allowances.map((allowance) => (
+                      <AllowanceEditor
+                        key={allowance.id}
+                        allowance={allowance}
+                        existing={isExistingAllowance(allowance, policy.current?.allowances ?? [])}
+                        usedBy={draft.roles.flatMap((role) =>
+                          role.permissions
+                            .filter((permission) => permission.conditions.some((condition) => condition.operator === "withinAllowance" && condition.value === allowance.key && allowance.key))
+                            .map((permission) => `${role.name || role.key}: ${permission.name || permission.signatureLabel || permission.signature || shortHex(permission.targetAddress)}`),
+                        )}
+                        onChange={(update) => editAllowance(allowance.id, update)}
+                        onRemove={() => removeWithUndo(`allowance ${allowance.key || "(unnamed)"}`, (current) => ({
+                          ...current,
+                          allowances: current.allowances.filter((item) => item.id !== allowance.id),
+                        }))}
+                      />
+                    ))}
+                    {draft.allowances.length === 0 && (
+                      <div className="empty-state compact">
+                        <h3>No allowances yet</h3>
+                        <p>Create a shared budget, then select it in a permission condition.</p>
+                        <button className="button secondary" onClick={addAllowance}>+ Add allowance</button>
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {tab === "Batching" && (
+                <section className="single-panel">
+                  <div className="panel-heading">
+                    <div>
+                      <span className="eyebrow">Batched transactions</span>
+                      <h3>Batching</h3>
+                      <p>
+                        Enable batch support across all roles. Every inner call must still match the executing role’s permissions.
+                      </p>
+                    </div>
+                  </div>
+                  <details className="how-to">
+                    <summary>How batching permissions work</summary>
+                    <p>
+                      Enabling a target installs an official <b>unwrapper</b> on this modifier for that batch contract.
+                      The modifier then splits each batch and checks <b>every inner call against the role&apos;s own permissions</b>,
+                      so a batch can never do more than its parts are allowed to do.
+                    </p>
+                    <p>
+                      This shared setting does not grant permissions to any role. Enable only the batch contracts your
+                      bot actually uses. Each one is a separate owner-only transaction from your Safe.
+                    </p>
+                  </details>
+                  {unwrapperStates.error && <p className="error-text" role="alert">{unwrapperStates.error}</p>}
+                  <div className="unwrap-list">
+                    {UNWRAP_TARGETS.map((target) => {
+                      const state = unwrapperStates.states?.[target.id];
+                      const requested = Boolean(draft.unwrappers?.includes(target.id));
+                      const statusLabel = !state ? "Checking…" : state.status === "enabled" ? "Enabled" : state.status === "legacy" ? "Old adapter in use" : state.status === "unavailable" ? "Not available on this network" : "Not enabled";
+                      const canEnable = state && (state.status === "missing" || state.status === "legacy");
+                      return (
+                        <article className="unwrap-card" key={target.id}>
+                          <div>
+                            <b>{target.label}</b>
+                            <span className={`health-badge ${state?.status === "enabled" ? "" : state?.status === "legacy" ? "warn" : "neutral"}`}>{statusLabel}</span>
+                            <p>{target.explanation}</p>
+                            {state?.contract && <code title={state.contract}>{state.contract}</code>}
+                            {state?.status === "legacy" && <small className="field-help">An older adapter is set for this contract. Enabling replaces it with the current official one.</small>}
+                          </div>
+                          {canEnable && (
+                            <button
+                              className={requested ? "button ghost" : "button secondary"}
+                              onClick={() =>
+                                policy.setDraft((current) => {
+                                  const ids = new Set(current.unwrappers ?? []);
+                                  if (ids.has(target.id)) ids.delete(target.id); else ids.add(target.id);
+                                  const { unwrappers: _previous, ...rest } = current;
+                                  void _previous;
+                                  return ids.size ? { ...rest, unwrappers: [...ids] } : rest;
+                                })
+                              }
+                            >
+                              {requested ? "Planned · Undo" : "Enable"}
+                            </button>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {tab === "Activity" && (
+                <ActivityPanel
+                  safe={safe}
+                  chainId={policy.scope.chainId}
+                  rolesMod={policy.scope.rolesMod}
+                />
+              )}
+            </>
+          ) : selectedRole ? (
             <>
               <div className="breadcrumbs">
                 {chainName(policy.scope.chainId)} <span>/</span>{" "}
@@ -503,7 +654,8 @@ export default function Home() {
               </div>
               <header className="role-header">
                 <div>
-                  <div className="title-row">
+                  <label className="role-name-field">
+                    <span>Role name</span>
                     <input
                       className="title-input"
                       value={selectedRole.name}
@@ -516,7 +668,8 @@ export default function Home() {
                         }))
                       }
                     />
-                  </div>
+                  </label>
+                  <label className="role-description-field"><span>Description <small>(optional)</small></span>
                   <input
                     className="description-input"
                     value={selectedRole.description}
@@ -529,6 +682,7 @@ export default function Home() {
                       }))
                     }
                   />
+                  </label>
                   <label className="role-key-field">
                     <span>role key</span>
                     <input
@@ -565,17 +719,16 @@ export default function Home() {
               </header>
 
               <nav className="tabs" aria-label="Role sections">
-                {tabs.map((item) => (
+                {roleTabs.map((item) => (
                   <button
                     key={item}
                     className={tab === item ? "active" : ""}
+                    aria-pressed={tab === item}
                     onClick={() => setTab(item)}
                   >
                     {item}
                     {item === "Permissions" && <span>{selectedRole.permissions.length}</span>}
                     {item === "Members" && <span>{selectedRole.members.length}</span>}
-                    {item === "Allowances" && <span>{draft.allowances.length}</span>}
-                    {item === "Batching" && Boolean(draft.unwrappers?.length) && <span>{draft.unwrappers!.length}</span>}
                   </button>
                 ))}
               </nav>
@@ -612,11 +765,9 @@ export default function Home() {
                         </div>
                         {selectedRole.permissions.map((permission) => {
                           const risk = draftPermissionRisk(permission);
-                          const active = permission.conditions.filter(
-                            (condition) => condition.operator !== "pass",
-                          );
+                          const change = permissionChange(baselineRoleFor(policy.baseline, selectedRole), permission);
                           return (
-                            <div className="permission-row-wrap" key={permission.id}>
+                            <div className={`permission-row-wrap ${change ? "changed" : ""}`} key={permission.id}>
                             <button
                               className="permission-row"
                               onClick={() => setSelectedPermissionId(permission.id)}
@@ -626,7 +777,7 @@ export default function Home() {
                                   {permissionGlyph(permission)}
                                 </span>
                                 <span>
-                                  <b><ContractName chainId={policy.scope!.chainId} address={permission.targetAddress} label={permission.name}/></b>
+                                  <b><ContractName chainId={policy.scope!.chainId} address={permission.targetAddress} label={permission.name}/>{change && <span className="change-chip" title="Not yet submitted">{change === "new" ? "New" : "Edited"}</span>}</b>
                                   <code
                                     title={
                                       permission.mode === "target"
@@ -652,29 +803,8 @@ export default function Home() {
                               <span className="constraint-cell">
                                 {permission.mode === "target" ? (
                                   <span className="condition-chip dangerous">All functions</span>
-                                ) : permission.rawCondition ? (
-                                  (() => {
-                                    const lines = summarizeCondition(permission.rawCondition);
-                                    return lines.length ? (
-                                      <>
-                                        {lines.slice(0, 2).map((line) => (
-                                          <span className="condition-chip locked" key={line} title="Deployed condition, preserved exactly as on chain">{line}</span>
-                                        ))}
-                                        {lines.length > 2 && <span className="condition-chip neutral">+{lines.length - 2} more</span>}
-                                      </>
-                                    ) : (
-                                      <span className="condition-chip locked">Deployed condition</span>
-                                    );
-                                  })()
-                                ) : active.length ? (
-                                  active.slice(0, 2).map((condition) => (
-                                    <span className="condition-chip" key={condition.id}>
-                                      arg {condition.paramIndex} ·{" "}
-                                      {conditionOperatorLabels[condition.operator]}
-                                    </span>
-                                  ))
                                 ) : (
-                                  <span className="condition-chip neutral">Unconstrained</span>
+                                  <PermissionConditions permission={permission} chainId={policy.scope!.chainId} signature={describePermissionFunction(permission, functionNames, selectorNames)}/>
                                 )}
                                 {permission.delegatecall && (
                                   <span className="condition-chip dangerous">delegatecall</span>
@@ -797,137 +927,7 @@ export default function Home() {
                 </section>
               )}
 
-              {tab === "Allowances" && (
-                <section className="single-panel">
-                  <div className="panel-heading">
-                    <div>
-                      <span className="eyebrow">Rate limits</span>
-                      <h3>Allowances</h3>
-                      <p>
-                        Shared across the whole modifier. Amounts are integer base units of
-                        whichever asset the condition constrains.
-                      </p>
-                    </div>
-                    <button className="button secondary" onClick={addAllowance}>
-                      + Add allowance
-                    </button>
-                  </div>
-                  <details className="how-to" open={draft.allowances.length === 0}>
-                    <summary>How allowances work</summary>
-                    <p>
-                      An allowance is a shared spending budget. It does nothing until a permission
-                      points at it, and then every call by a member of that role spends from it.
-                      When the budget runs out, further calls are denied until it refills.
-                    </p>
-                    <p><b>Example: let the bot move at most 1,000 USDC per day</b></p>
-                    <ol>
-                      <li>Add an allowance named <code>usdc_daily</code>. USDC has 6 decimals, so 1,000 USDC is <code>1000000000</code>. Set Available now, Ceiling and Refill amount to that, and the period to Daily.</li>
-                      <li>Open the role&apos;s <code>transfer</code> permission on the USDC contract and add a condition on <b>value</b>: <b>Within allowance</b> → <code>usdc_daily</code>.</li>
-                      <li>Review and submit. Allowances are shared by the whole modifier, so the same budget can cap several permissions or roles together.</li>
-                    </ol>
-                  </details>
-                  <div className="allowance-list">
-                    {draft.allowances.map((allowance) => (
-                      <AllowanceEditor
-                        key={allowance.id}
-                        allowance={allowance}
-                        usedBy={draft.roles.flatMap((role) =>
-                          role.permissions
-                            .filter((permission) => permission.conditions.some((condition) => condition.operator === "withinAllowance" && condition.value === allowance.key && allowance.key))
-                            .map((permission) => `${role.name || role.key}: ${permission.name || permission.signatureLabel || permission.signature || shortHex(permission.targetAddress)}`),
-                        )}
-                        onChange={(update) => editAllowance(allowance.id, update)}
-                        onRemove={() =>
-                          policy.setDraft((current) => ({
-                            ...current,
-                            allowances: current.allowances.filter(
-                              (item) => item.id !== allowance.id,
-                            ),
-                          }))
-                        }
-                      />
-                    ))}
-                    {draft.allowances.length === 0 && (
-                      <div className="empty-state compact">
-                        <h3>No allowances yet</h3>
-                        <p>Add one to cap how much a role can spend over time, for example 1,000 USDC per day. Without one, a permission can only limit each single call.</p>
-                        <button className="button secondary" onClick={addAllowance}>+ Add allowance</button>
-                      </div>
-                    )}
-                  </div>
-                </section>
-              )}
 
-              {tab === "Batching" && (
-                <section className="single-panel">
-                  <div className="panel-heading">
-                    <div>
-                      <span className="eyebrow">Batched transactions</span>
-                      <h3>Batching</h3>
-                      <p>
-                        Bots and apps often send several calls as one batch (Safe MultiSend, Morpho Bundler3).
-                        A batch is a single blob of calldata, so Roles cannot match it against per-call permissions.
-                      </p>
-                    </div>
-                  </div>
-                  <details className="how-to" open={!draft.unwrappers?.length}>
-                    <summary>What enabling does</summary>
-                    <p>
-                      Enabling a target installs an official <b>unwrapper</b> on this modifier for that batch contract.
-                      The modifier then splits each batch and checks <b>every inner call against the role&apos;s own permissions</b>,
-                      so a batch can never do more than its parts are allowed to do.
-                    </p>
-                    <p>
-                      Without it, role members cannot send that kind of batch at all. Enable only the batch contracts your
-                      bot actually uses. Each one is a separate owner-only transaction from your Safe.
-                    </p>
-                  </details>
-                  {unwrapperStates.error && <p className="error-text" role="alert">{unwrapperStates.error}</p>}
-                  <div className="unwrap-list">
-                    {UNWRAP_TARGETS.map((target) => {
-                      const state = unwrapperStates.states?.[target.id];
-                      const requested = Boolean(draft.unwrappers?.includes(target.id));
-                      const statusLabel = !state ? "Checking…" : state.status === "enabled" ? "Enabled" : state.status === "legacy" ? "Old adapter in use" : state.status === "unavailable" ? "Not available on this network" : "Not enabled";
-                      const canEnable = state && (state.status === "missing" || state.status === "legacy");
-                      return (
-                        <article className="unwrap-card" key={target.id}>
-                          <div>
-                            <b>{target.label}</b>
-                            <span className={`health-badge ${state?.status === "enabled" ? "" : state?.status === "legacy" ? "warn" : "neutral"}`}>{statusLabel}</span>
-                            <p>{target.explanation}</p>
-                            {state?.contract && <code title={state.contract}>{state.contract}</code>}
-                            {state?.status === "legacy" && <small className="field-help">An older adapter is set for this contract. Enabling replaces it with the current official one.</small>}
-                          </div>
-                          {canEnable && (
-                            <button
-                              className={requested ? "button ghost" : "button secondary"}
-                              onClick={() =>
-                                policy.setDraft((current) => {
-                                  const ids = new Set(current.unwrappers ?? []);
-                                  if (ids.has(target.id)) ids.delete(target.id); else ids.add(target.id);
-                                  const { unwrappers: _previous, ...rest } = current;
-                                  void _previous;
-                                  return ids.size ? { ...rest, unwrappers: [...ids] } : rest;
-                                })
-                              }
-                            >
-                              {requested ? "Planned · Undo" : "Enable"}
-                            </button>
-                          )}
-                        </article>
-                      );
-                    })}
-                  </div>
-                </section>
-              )}
-
-              {tab === "Activity" && (
-                <ActivityPanel
-                  safe={safe}
-                  chainId={policy.scope.chainId}
-                  rolesMod={policy.scope.rolesMod}
-                />
-              )}
             </>
           ) : (
             <div className="empty-state">

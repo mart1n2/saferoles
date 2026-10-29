@@ -4,8 +4,8 @@ export const LOCAL_DATABASE = "saferoles-workspace-v1";
  * Bump this whenever a store is added: an existing browser database is upgraded
  * in place, and missing stores are created on the upgrade.
  */
-export const LOCAL_DATABASE_VERSION = 2;
-export const localStores = ["drafts", "submissions", "abis", "secrets", "forms"] as const;
+export const LOCAL_DATABASE_VERSION = 3;
+export const localStores = ["drafts", "submissions", "abis", "secrets", "forms", "labels"] as const;
 export type LocalStore = typeof localStores[number];
 let opening: Promise<IDBDatabase> | null = null;
 export function openLocalDatabase(): Promise<IDBDatabase> {

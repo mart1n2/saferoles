@@ -6,6 +6,7 @@
  * clearance transitions). This module's job is mapping, validation, and
  * reporting problems against the specific field that caused them.
  */
+import { allowanceBaseUnits } from "./allowance-amounts";
 import { AbiCoder, ParamType } from "ethers";
 import {
   Operator,
@@ -193,6 +194,10 @@ function toSdkAllowance(allowance: DraftAllowance): SdkAllowance {
   }
 
   const amount = (field: keyof DraftAllowance, label: string) => {
+    if (["balance", "maxRefill", "refill"].includes(field) && allowance.amountDecimals !== undefined) {
+      try { return allowanceBaseUnits(String(allowance[field]), allowance.amountDecimals); }
+      catch { throw new Error(`${label} must be a non-negative amount with at most ${allowance.amountDecimals} decimal places, within the on-chain limit.`); }
+    }
     const raw = String(allowance[field] ?? "").trim().replaceAll(",", "").replaceAll("_", "");
     if (!/^\d+$/.test(raw)) {
       throw new Error(`${label} must be a whole number in base units.`);

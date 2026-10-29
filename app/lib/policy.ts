@@ -132,7 +132,10 @@ export type DraftAllowance = {
   id: string;
   /** Human-readable key, or a 0x-prefixed bytes32. */
   key: string;
-  /** All amounts are integer base units of the constrained asset. */
+  /** Decimal token amounts when amountDecimals is set; legacy drafts use base units. */
+  amountDecimals?: number;
+  /** Editor preference for a new budget; omitted legacy drafts retain their balance. */
+  customInitialBalance?: boolean;
   balance: string;
   maxRefill: string;
   refill: string;

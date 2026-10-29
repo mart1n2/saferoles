@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { formatUnits } from "ethers";
+import { allowanceBaseUnits, allowanceDisplayAmount, withAllowanceDecimals, editAllowanceAmount, hasCustomInitialBalance } from "../lib/allowance-amounts";
 import type { DraftAllowance } from "../lib/policy";
 
 const periods = [
@@ -9,18 +8,6 @@ const periods = [
   { label: "30 days", every: "30 days", seconds: "2592000" },
   { label: "One-time", every: "", seconds: "0" },
 ];
-
-/** "1,000" for a raw base-unit amount, or null when it is not a plain integer. */
-function readable(raw: string, decimals: number): string | null {
-  if (!/^\d+$/.test(raw.trim())) return null;
-  try {
-    const [whole, fraction] = formatUnits(BigInt(raw.trim()), decimals).split(".");
-    const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-    return fraction && fraction !== "0" ? `${grouped}.${fraction}` : grouped;
-  } catch {
-    return null;
-  }
-}
 
 function describePeriod(period: string): string {
   const seconds = Number(period);
@@ -34,36 +21,44 @@ function describePeriod(period: string): string {
 
 export function AllowanceEditor({
   allowance,
+  existing = false,
   usedBy,
   onChange,
   onRemove,
 }: {
   allowance: DraftAllowance;
+  existing?: boolean;
   /** Permissions whose conditions draw on this allowance. */
   usedBy: string[];
   onChange: (update: (allowance: DraftAllowance) => DraftAllowance) => void;
   onRemove: () => void;
 }) {
-  const [decimalsText, setDecimalsText] = useState("6");
   const set = (field: keyof DraftAllowance) => (value: string) =>
     onChange((current) => ({ ...current, [field]: value }));
-  const decimals = Math.min(36, Math.max(0, Number.parseInt(decimalsText, 10) || 0));
+  const decimals = allowance.amountDecimals ?? 6;
+  const customInitialBalance = hasCustomInitialBalance(allowance);
 
   const amount = (field: "balance" | "maxRefill" | "refill", label: string, help: string) => {
-    const shown = readable(allowance[field], decimals);
+    const shown = allowanceDisplayAmount(allowance, field, decimals);
+    let raw: string | null = null;
+    try { raw = allowanceBaseUnits(shown, decimals).toString(); } catch { /* Keep incomplete input editable. */ }
     return (
       <label>
         <span>{label}</span>
         <input
           className="mono-input"
-          inputMode="numeric"
-          value={allowance[field]}
-          onChange={(event) => set(field)(event.target.value.trim())}
+          inputMode="decimal"
+          aria-label={label}
+          value={shown}
+          onChange={(event) => {
+            const value = event.target.value;
+            onChange((current) => editAllowanceAmount(current, field, value, decimals, existing));
+          }}
         />
         <small>{help}</small>
-        {shown !== null && <small className="amount-preview">= {shown} tokens at {decimals} decimals</small>}
-        {allowance[field] !== "" && shown === null && (
-          <small className="error-text">Whole number in the token&apos;s smallest unit, no decimals or commas.</small>
+        {raw !== null && <small className="amount-preview">On-chain integer: {raw}</small>}
+        {shown !== "" && raw === null && (
+          <small className="error-text">Enter a non-negative amount with up to {decimals} decimal places, within the on-chain limit.</small>
         )}
       </label>
     );
@@ -72,13 +67,17 @@ export function AllowanceEditor({
   return (
     <article className="allowance-card editable">
       <div className="allowance-head">
+        <label className="allowance-name-field">
+          <span>Allowance name</span>
         <input
           className="mono-input"
           value={allowance.key}
-          placeholder="Name it, e.g. usdc_daily"
-          aria-label="Allowance key"
+          placeholder="e.g. usdc_daily"
+          aria-label="Allowance name"
           onChange={(event) => set("key")(event.target.value)}
         />
+          <small>Use this name to select the shared budget in a permission condition.</small>
+        </label>
         <button className="row-remove" aria-label="Remove allowance" title="Remove allowance" onClick={onRemove}>×</button>
       </div>
       <p className="allowance-usage">
@@ -86,25 +85,23 @@ export function AllowanceEditor({
           ? <>Used by: {usedBy.join(", ")}.</>
           : <>Not used yet. In a permission&apos;s parameter conditions, choose <b>Within allowance</b> and pick this one; each call then spends from it.</>}
       </p>
+      <p className="allowance-usage">This is a cumulative budget shared across calls, permissions and members that use it. Each matching call deducts its amount from the same budget.</p>
       <label className="allowance-decimals">
         <span>Token decimals</span>
-        <input
-          inputMode="numeric"
-          aria-label="Token decimals for the amount previews"
-          value={decimalsText}
-          onChange={(event) => setDecimalsText(event.target.value)}
-        />
-        <small>Only for the previews below. USDC and USDT use 6, DAI and ETH use 18.</small>
+        <select aria-label="Token decimals" value={decimals} onChange={(event) => onChange((current) => withAllowanceDecimals(current, Number(event.target.value)))}>
+          {Array.from({ length: 37 }, (_, value) => <option key={value} value={value}>{value}</option>)}
+        </select>
+        <small>Enter token quantities below: 1000 means 1,000 tokens. USDC uses 6 decimals; DAI and ETH use 18. Changing decimals preserves existing on-chain quantities.</small>
       </label>
       <div className="allowance-grid-fields">
-        {amount("balance", "Available now", "Unspent budget at this moment. Raising it is a deliberate top-up.")}
-        {amount("maxRefill", "Ceiling", "The most the budget can hold; refilling stops here.")}
-        {amount("refill", "Refill amount", "Added each period, never above the ceiling.")}
+        {amount("maxRefill", "Budget ceiling", "Maximum shared budget accumulated across calls. Unspent budget carries over up to this cap.")}
+        {amount("refill", "Refill per period", "Added to the remaining shared budget for each elapsed period, up to the ceiling. Use 0 for a one-time budget.")}
         <label>
           <span>Period (seconds)</span>
           <input
             className="mono-input"
             inputMode="numeric"
+            aria-label="Period (seconds)"
             value={allowance.period}
             onChange={(event) => set("period")(event.target.value.trim())}
           />
@@ -123,6 +120,24 @@ export function AllowanceEditor({
           </span>
         </label>
       </div>
+      <p className="allowance-balance-summary">
+        {existing
+          ? <>Saved remaining budget: <b>{allowanceDisplayAmount(allowance, "balance", decimals)}</b>. This loaded snapshot may exclude later spending or accrued refills. Changing the ceiling preserves this balance.</>
+          : <>Initial budget: <b>{allowanceDisplayAmount(allowance, "balance", decimals) || "—"}</b>{customInitialBalance ? " (custom)." : " — starts at the ceiling."}</>}
+      </p>
+      <details className="allowance-advanced">
+        <summary>Advanced settings</summary>
+        {existing ? amount("balance", "Set remaining budget", "Explicitly replaces the saved remaining balance. Raising it tops up the shared budget; lowering it removes available budget. Must not exceed the ceiling.") : <>
+          <label className="allowance-custom-toggle">
+            <input type="checkbox" checked={customInitialBalance} onChange={(event) => {
+              const checked = event.target.checked;
+              onChange((current) => ({ ...current, customInitialBalance: checked, balance: checked ? current.balance : current.maxRefill }));
+            }} />
+            Use a custom initial budget
+          </label>
+          {customInitialBalance && amount("balance", "Initial budget", "Shared budget available at creation. Must not exceed the ceiling; future periods refill it normally.")}
+        </>}
+      </details>
     </article>
   );
 }

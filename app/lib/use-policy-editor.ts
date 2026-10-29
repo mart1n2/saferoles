@@ -4,7 +4,9 @@ import type { DraftAllowance, DraftPermission, DraftRole } from "./policy";
 import type { PolicyState } from "./use-policy";
 import { suggestRoleKey } from "./initialization";
 import { useFunctionNames, useSelectorNames } from "./use-abi";
-export const tabs = ["Permissions", "Members", "Allowances", "Batching", "Activity"] as const;
+export const roleTabs = ["Permissions", "Members"] as const;
+export const configTabs = ["Contracts", "Allowances", "Batching", "Activity"] as const;
+export const tabs = [...roleTabs, ...configTabs] as const;
 export type Tab = (typeof tabs)[number];
 const nextId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 export function usePolicyEditor(policy: PolicyState) {
@@ -176,6 +178,8 @@ export function usePolicyEditor(policy: PolicyState) {
         ...current.allowances,
         {
           id: nextId("allowance"),
+          amountDecimals: 6,
+          customInitialBalance: false,
           key: "",
           balance: "0",
           maxRefill: "0",
