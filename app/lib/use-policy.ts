@@ -15,6 +15,7 @@ import { fromRolesMod, isBlankPermission, lockDeployedRoleKeys, toSdkState, type
 import { buildPlan, withUnwrappers, type Plan } from "./policy-plan";
 import type { DraftPolicy } from "./policy";
 import { browserRolesReader } from "./browser-data";
+import { policyChanged } from "./draft-changes";
 import {
   clearSavedForm,
   formKeys,
@@ -166,7 +167,7 @@ export function usePolicy(): PolicyState {
     setScope(next);
 
     try {
-      const indexedMod = await browserRolesReader.read({chainId:next.chainId,address:next.rolesMod});
+      const indexedMod = await browserRolesReader.read({chainId:next.chainId,address:next.rolesMod},{cache:"no-store"});
       // A modifier deployed moments ago is on chain before the indexer sees it.
       const mod = indexedMod ?? await readUnindexedModifier(next.rolesMod, next.chainId).catch(() => null);
       if (!mod) throw new Error("No Roles modifier is indexed at this address.");
@@ -325,12 +326,11 @@ export function usePolicy(): PolicyState {
     if (active) void clearSavedForm(formKeys.policy(active.chainId, active.rolesMod));
   }, [baseHash]);
 
-  const dirty = useMemo(
-    () => Boolean(draft && pristine && JSON.stringify(draft) !== pristine),
-    [draft, pristine],
-  );
-
   const baseline = useMemo(() => (pristine ? (JSON.parse(pristine) as DraftPolicy) : null), [pristine]);
+  const dirty = useMemo(
+    () => Boolean(draft && baseline && policyChanged(baseline, draft)),
+    [draft, baseline],
+  );
 
   const workingKey = scope ? formKeys.policy(scope.chainId, scope.rolesMod) : null;
 
@@ -340,7 +340,7 @@ export function usePolicy(): PolicyState {
     if (!workingKey || !draft || !dirty || status !== "loaded" || skipAutosave.current) return;
     // Blank, never-started permissions are not worth recovering.
     const savable: DraftPolicy = { ...draft, roles: draft.roles.map((role) => ({ ...role, permissions: role.permissions.filter((permission) => !isBlankPermission(permission)) })) };
-    if (JSON.stringify(savable) === pristine) {
+    if (!baseline || !policyChanged(baseline, savable)) {
       void clearSavedForm(workingKey);
       return;
     }
@@ -366,7 +366,7 @@ export function usePolicy(): PolicyState {
       window.clearTimeout(timer);
       window.removeEventListener("pagehide", flush);
     };
-  }, [workingKey, draft, dirty, status, baseHash, pristine]);
+  }, [workingKey, draft, dirty, status, baseHash, baseline]);
 
   // Discarding or reverting the edits leaves nothing to recover.
   useEffect(() => {

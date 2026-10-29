@@ -1,3 +1,4 @@
+import { AddressText } from "./address-link";
 import { useState } from "react";
 import { chainName } from "../lib/chains";
 import { normalizeContractAddress, type LocalContract } from "../lib/contract-labels";
@@ -11,7 +12,7 @@ function ContractRow({ contract, onRemove, busy }: { contract: LocalContract; on
   return <article className="local-contract-row">
     <div className="local-contract-copy">
       <b><ContractName chainId={contract.chainId} address={contract.address} label={contract.label}/></b>
-      <code>{contract.address}</code>
+      <AddressText chainId={contract.chainId} address={contract.address} full/>
       {editing && <label className="modal-field"><span>Custom label</span><input aria-label={`Label for ${contract.address}`} value={label.value ?? contract.label} maxLength={256} placeholder="Leave empty to use the token symbol or contract name" onChange={(event) => label.save(event.target.value)}/><small>{label.error || (label.saving ? "Saving locally…" : "Saved locally. An empty label uses the automatic name.")}</small></label>}
     </div>
     <div className="local-contract-actions">

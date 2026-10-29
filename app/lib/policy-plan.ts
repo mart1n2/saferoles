@@ -9,6 +9,7 @@
 import {
   ExecutionOptions,
   Operator,
+  ParameterType,
   decodeKey,
   type Condition,
 } from "zodiac-roles-sdk";
@@ -35,43 +36,110 @@ export function highestRisk(risks: readonly Risk[]): Risk {
 }
 
 /**
- * Risk of a single draft permission, for the editor's own display.
+ * What a permission's parameter conditions amount to, independent of how they
+ * are held: a raw tree imported from chain or the editor's decoded list must
+ * rate the same, or the same grant would change rating when it is opened.
  *
- * Derived from the permission's structure — execution flags, clearance, whether
- * any parameter is actually constrained — never from a parameter's label, so
- * renaming a field cannot change the assessment.
+ * - `open`: nothing is constrained.
+ * - `simple`: flat conditions the editor can show (equals, avatar, bounds, allowance).
+ * - `complex`: anything else, such as nesting or operators the editor cannot read.
  */
+export type ConditionShape = "open" | "simple" | "complex";
+
+const SIMPLE_OPERATORS: ReadonlySet<Operator> = new Set([
+  Operator.Pass,
+  Operator.EqualToAvatar,
+  Operator.EqualTo,
+  Operator.WithinAllowance,
+  Operator.GreaterThan,
+  Operator.LessThan,
+]);
+
+export function conditionShape(condition: Condition | undefined): ConditionShape {
+  if (!condition) return "open";
+  if (
+    condition.paramType !== ParameterType.Calldata ||
+    condition.operator !== Operator.Matches ||
+    !condition.children
+  ) {
+    return isUnconstrained(condition) ? "open" : "complex";
+  }
+  let constrained = false;
+  for (const child of condition.children) {
+    if (child.children && child.children.length > 0) return "complex";
+    if (!SIMPLE_OPERATORS.has(child.operator)) return "complex";
+    if (child.operator !== Operator.Pass) constrained = true;
+  }
+  return constrained ? "simple" : "open";
+}
+
+/**
+ * The single rating rule, shared by the editor list, the permission detail and
+ * the review plan:
+ *
+ * - Critical: may delegatecall.
+ * - High: nothing is constrained, so any recipient or amount is permitted.
+ * - Medium: may send native value, or carries a condition this editor cannot read.
+ * - Low: constrained, no value, no delegatecall.
+ */
+export function rateGrant(
+  shape: ConditionShape,
+  options: { delegatecall: boolean; send: boolean },
+): { risk: Risk; reason: string } {
+  if (options.delegatecall) {
+    return {
+      risk: "Critical",
+      reason: "Delegatecall runs the target's code with the Safe's own storage and balances.",
+    };
+  }
+  if (shape === "open") {
+    return {
+      risk: "High",
+      reason: "No parameter is constrained, so any recipient or amount is permitted.",
+    };
+  }
+  if (options.send) {
+    return { risk: "Medium", reason: "The call may also send native value." };
+  }
+  if (shape === "complex") {
+    return {
+      risk: "Medium",
+      reason: "The deployed condition uses nesting or operators this editor cannot summarize, so it is preserved as deployed and rated cautiously.",
+    };
+  }
+  return { risk: "Low", reason: "Parameters are constrained and no native value can be sent." };
+}
+
+function draftShape(permission: DraftPermission): ConditionShape {
+  if (permission.rawCondition) return conditionShape(permission.rawCondition);
+  // A condition still waiting for its value constrains nothing yet.
+  return permission.conditions.some(
+    (condition) =>
+      condition.operator !== "pass" && (condition.operator === "avatar" || condition.value.trim() !== ""),
+  )
+    ? "simple"
+    : "open";
+}
+
+/** Risk of a single draft permission, for the editor's own display. */
 export function draftPermissionRisk(permission: DraftPermission): Risk {
-  if (permission.delegatecall) return "Critical";
-  if (permission.mode === "target") return "High";
+  return draftRating(permission).risk;
+}
 
-  // An imported condition is real policy even though the editor cannot show it.
-  if (permission.rawCondition) return "Medium";
-
-  const constrained = permission.conditions.some(
-    (condition) => condition.operator !== "pass",
-  );
-  if (!constrained) return "High";
-  return permission.send ? "Medium" : "Low";
+function draftRating(permission: DraftPermission) {
+  if (permission.mode === "target") {
+    return permission.delegatecall
+      ? rateGrant("open", permission)
+      : {
+          risk: "High" as Risk,
+          reason: "Whole-contract clearance permits every function, including ones added by a future upgrade.",
+        };
+  }
+  return rateGrant(draftShape(permission), permission);
 }
 
 export function riskReason(permission: DraftPermission): string {
-  if (permission.delegatecall) {
-    return "Delegatecall runs the target's code with the Safe's own storage and balances.";
-  }
-  if (permission.mode === "target") {
-    return "Whole-contract clearance permits every function, including ones added by a future upgrade.";
-  }
-  if (permission.rawCondition) {
-    return "Deployed condition is preserved exactly as it is on chain and cannot be edited here.";
-  }
-  if (!permission.conditions.some((condition) => condition.operator !== "pass")) {
-    return "No parameter is constrained, so any recipient or amount is permitted.";
-  }
-  if (permission.send) {
-    return "The call may also send native value.";
-  }
-  return "Parameters are constrained.";
+  return draftRating(permission).reason;
 }
 
 export type PlannedChange = {
@@ -86,6 +154,35 @@ export type PlannedChange = {
   /** Why this carries the risk it does. Shown next to the row. */
   rationale?: string;
 };
+
+/** A piece of a change summary: plain text, or a contract the UI renders by name. */
+export type SummaryPart = string | { contract: string };
+
+/**
+ * The review summary of a target or function change, with the contract left as
+ * a reference and the selector replaced by the function's name when known, so
+ * "Allow 0xa9059cbb on 0xdac1…1ec7" reads "Allow transfer on USDT". Anything
+ * else keeps its plain summary.
+ */
+export function summaryParts(
+  change: PlannedChange,
+  functionName: (address: string, selector: string) => string | null,
+): SummaryPart[] {
+  const call = change.call as { call?: string; targetAddress?: string; selector?: string };
+  const target = call.targetAddress;
+  if (!target) return [change.summary];
+  const readable = call.selector ? functionName(target, call.selector) : null;
+  const name = readable ? readable.split("(")[0] : call.selector;
+  switch (call.call) {
+    case "allowTarget": return ["Allow every function on ", { contract: target }];
+    case "scopeTarget": return ["Restrict ", { contract: target }, " to named functions"];
+    case "revokeTarget": return ["Revoke all access to ", { contract: target }];
+    case "allowFunction": return [`Allow ${name} on `, { contract: target }, " with any arguments"];
+    case "scopeFunction": return [`Allow ${name} on `, { contract: target }, " under conditions"];
+    case "revokeFunction": return [`Revoke ${name} on `, { contract: target }];
+    default: return [change.summary];
+  }
+}
 
 export type EncodedTransaction = {
   to: string;
@@ -180,7 +277,7 @@ function describeCall(
         summary: `Restrict ${shortHex(call.targetAddress)} to named functions`,
         detail: `${call.targetAddress} · individual functions are cleared separately`,
         risk: "Low",
-        rationale: "Narrows the contract from whole-target clearance to specific functions.",
+        rationale: "Limits this contract to the individual functions allowed below; it grants nothing on its own.",
       };
 
     case "revokeTarget":
@@ -206,19 +303,17 @@ function describeCall(
       };
 
     case "scopeFunction": {
-      const unconstrained = isUnconstrained(call.condition);
-      const delegate = allowsDelegateCall(call.executionOptions);
+      const rating = rateGrant(conditionShape(call.condition), {
+        delegatecall: allowsDelegateCall(call.executionOptions),
+        send: allowsSend(call.executionOptions),
+      });
       return {
         action: "Grant",
         scope: keyLabel(call.roleKey),
         summary: `Allow ${call.selector} on ${shortHex(call.targetAddress)} under conditions`,
         detail: `${call.targetAddress} · ${describeExecution(call.executionOptions)}`,
-        risk: delegate ? "Critical" : unconstrained ? "High" : "Medium",
-        rationale: delegate
-          ? "Delegatecall runs the target's code with the Safe's own storage and balances."
-          : unconstrained
-            ? "Every parameter in this condition passes, so it constrains nothing."
-            : "Parameters are constrained by the attached condition.",
+        risk: rating.risk,
+        rationale: rating.reason,
       };
     }
 

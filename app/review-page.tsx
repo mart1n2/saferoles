@@ -2,6 +2,12 @@ import { ConfigurationPage } from "./components/configuration-page";
 
 import { useEffect, useRef, useState } from "react";
 import { shortHex } from "./lib/abi";
+import { summaryParts } from "./lib/policy-plan";
+import { useFunctionNames } from "./lib/use-abi";
+import { ContractName } from "./components/contract-name";
+import { PinnedAddresses } from "./components/permission-conditions";
+import type { DraftPermission } from "./lib/policy";
+import { AddressText } from "./components/address-link";
 import { safeTransactionUrl } from "./lib/chains";
 import type { DraftPolicy, PolicyIssue } from "./lib/policy";
 import type { ChainFacts, Scope, usePolicy } from "./lib/use-policy";
@@ -53,6 +59,12 @@ export function ReviewPage({
   onBaselineChanged: (reason: "changed" | "indexer-pending") => void;
   onSubmitted: () => void;
 }) {
+  const targets = [...new Set(plan.changes.flatMap((change) => {
+    const address = (change.call as { targetAddress?: string }).targetAddress;
+    return address ? [address.toLowerCase()] : [];
+  }))];
+  const functionNames = useFunctionNames(scope.chainId, targets);
+  const nameOf = (address: string, selector: string) => functionNames[address.trim().toLowerCase()]?.[selector.toLowerCase()] ?? null;
   const [state, setState] = useState<
     "idle" | "checking" | "submitting" | "partial" | "done" | "error"
   >("idle");
@@ -315,10 +327,30 @@ export function ReviewPage({
                       : "~"}
                 </span>
                 <span>
-                  <b>{change.summary}</b>
+                  <b>
+                    {summaryParts(change, nameOf).map((part, index) =>
+                      typeof part === "string"
+                        ? part
+                        : <ContractName key={index} chainId={scope.chainId} address={part.contract} />,
+                    )}
+                  </b>
                   <small>
-                    {change.scope} · {change.detail}
+                    {change.scope} ·{" "}
+                    {(() => {
+                      const address = (change.call as { targetAddress?: string }).targetAddress;
+                      if (!address || !change.detail.startsWith(address)) return change.detail;
+                      return <><AddressText chainId={scope.chainId} address={address} />{change.detail.slice(address.length)}</>;
+                    })()}
                   </small>
+                  {(() => {
+                    // Who a grant points at: the pinned address parameters, by name.
+                    const call = change.call as { call?: string; targetAddress?: string; selector?: string; condition?: DraftPermission["rawCondition"] };
+                    if (call.call !== "scopeFunction" || !call.targetAddress || !call.selector || !call.condition) return null;
+                    const readable = nameOf(call.targetAddress, call.selector);
+                    if (!readable) return null;
+                    const pinned: DraftPermission = { id: change.id, name: "", targetAddress: call.targetAddress, mode: "function", signature: "", selector: call.selector, send: false, delegatecall: false, conditions: [], rawCondition: call.condition };
+                    return <small><PinnedAddresses permission={pinned} signature={readable} chainId={scope.chainId} /></small>;
+                  })()}
                   {change.rationale && (
                     <small className="rationale">{change.rationale}</small>
                   )}

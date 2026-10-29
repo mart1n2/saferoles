@@ -1,5 +1,5 @@
 import { id as keccak } from "ethers";
-import { adoptSignature } from "./policy-codec";
+import { adoptSignature, isBlankPermission } from "./policy-codec";
 import type { DraftPermission, DraftPolicy, DraftRole } from "./policy";
 
 export type PermissionChange = "new" | "edited" | null;
@@ -47,6 +47,8 @@ function samePermission(before: DraftPermission, after: DraftPermission): boolea
   return same(comparable, after);
 }
 
+const withoutPermissions = (role: DraftRole) => ({ ...role, permissions: undefined });
+
 /** A permission is the same grant when it targets the same contract and function. */
 const identity = (permission: DraftPermission) =>
   [
@@ -74,7 +76,79 @@ export function permissionChange(
   return candidates.some((entry) => samePermission(entry, permission)) ? null : "edited";
 }
 
-/** True when anything under the role differs from the baseline, including a removed permission. */
+/**
+ * True when the role differs from the baseline. Its own fields are compared
+ * directly; permissions through `permissionChange`, so an ABI decoding a raw
+ * condition (which can happen as soon as the list loads) is not an edit.
+ */
 export function roleChanged(baselineRole: DraftRole | undefined, role: DraftRole): boolean {
-  return !baselineRole || !same(baselineRole, role);
+  if (!baselineRole) return true;
+  const before = baselineRole.permissions;
+  const after = role.permissions.filter((permission) => !isBlankPermission(permission));
+  if (!same(withoutPermissions(baselineRole), withoutPermissions(role))) return true;
+  if (before.length !== after.length) return true;
+  if (after.some((permission) => permissionChange(baselineRole, permission) !== null)) return true;
+  return before.some((entry) => !after.some((permission) => identity(permission) === identity(entry)));
+}
+
+/**
+ * True when the draft differs from the baseline in substance. Representation
+ * differences (local ids, key order, an ABI decoding a raw condition) and
+ * never-started blank permissions are not changes, so they neither count as
+ * unsaved edits nor get autosaved for "recovery".
+ */
+export function policyChanged(baseline: DraftPolicy, draft: DraftPolicy): boolean {
+  const { roles: baseRoles, ...baseRest } = baseline;
+  const { roles: draftRoles, ...draftRest } = draft;
+  if (!same(baseRest, draftRest)) return true;
+  if (baseRoles.length !== draftRoles.length) return true;
+  return draftRoles.some((role) => roleChanged(baselineRoleFor(baseline, role), role));
+}
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+/** Plain-language list of how a draft differs from the indexed policy, e.g. for a restore notice. */
+export function summarizeChanges(baseline: DraftPolicy, draft: DraftPolicy): string[] {
+  const lines: string[] = [];
+  const draftRoles = draft.roles.filter((role) => baselineRoleFor(baseline, role));
+  const addedRoles = draft.roles.length - draftRoles.length;
+  const removedRoles = baseline.roles.filter(
+    (role) => !draft.roles.some((entry) => baselineRoleFor(baseline, entry) === role),
+  ).length;
+  if (addedRoles) lines.push(`${plural(addedRoles, "role")} added`);
+  if (removedRoles) lines.push(`${plural(removedRoles, "role")} removed`);
+
+  let added = 0;
+  let edited = 0;
+  let removed = 0;
+  let renamed = 0;
+  for (const role of draftRoles) {
+    const before = baselineRoleFor(baseline, role)!;
+    const kept = role.permissions.filter((permission) => !isBlankPermission(permission));
+    for (const permission of kept) {
+      const change = permissionChange(before, permission);
+      if (change === "new") added += 1;
+      if (change === "edited") edited += 1;
+    }
+    removed += before.permissions.filter(
+      (entry) => !kept.some((permission) => identity(permission) === identity(entry)),
+    ).length;
+    if (!same(withoutPermissions(before), withoutPermissions(role))) renamed += 1;
+  }
+  if (added) lines.push(`${plural(added, "permission")} added`);
+  if (edited) lines.push(`${plural(edited, "permission")} edited`);
+  if (removed) lines.push(`${plural(removed, "permission")} removed`);
+  if (renamed) lines.push(`${plural(renamed, "role")} with changed name, description or members`);
+
+  const baseAllowances = new Map(baseline.allowances.map((entry) => [entry.key, entry]));
+  const draftKeys = new Set(draft.allowances.map((entry) => entry.key));
+  const allowancesAdded = draft.allowances.filter((entry) => !baseAllowances.has(entry.key)).length;
+  const allowancesEdited = draft.allowances.filter(
+    (entry) => baseAllowances.has(entry.key) && !same(baseAllowances.get(entry.key), entry),
+  ).length;
+  const allowancesRemoved = baseline.allowances.filter((entry) => !draftKeys.has(entry.key)).length;
+  if (allowancesAdded) lines.push(`${plural(allowancesAdded, "allowance")} added`);
+  if (allowancesEdited) lines.push(`${plural(allowancesEdited, "allowance")} edited`);
+  if (allowancesRemoved) lines.push(`${plural(allowancesRemoved, "allowance")} removed`);
+  return lines;
 }

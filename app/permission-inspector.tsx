@@ -7,6 +7,8 @@ import { useTokenMetadata } from "./lib/use-token-metadata";
 import { useLocalContracts } from "./lib/use-local-contracts";
 import { normalizeContractAddress } from "./lib/contract-labels";
 import { ContractName } from "./components/contract-name";
+import { AddressLabel, AddressText } from "./components/address-link";
+import { NameEditor } from "./components/named-address";
 import { FunctionPicker } from "./components/function-picker";
 import type { ResolvedAbi } from "./lib/abi-source";
 import { conditionOperatorHelp, conditionOperatorLabels, conditionOperators, isValuelessOperator, type ConditionOperator, type DraftAllowance, type DraftPermission } from "./lib/policy";
@@ -134,7 +136,10 @@ export function PermissionInspector({
           <span className="eyebrow">Permission</span>
           <h3>{labelValue.trim() || automaticName || shortHex(permission.targetAddress) || "New permission"}</h3>
         </div>
-        <span className={`risk-badge ${risk.toLowerCase()}`}>{risk}</span>
+        <div className="inspector-heading-actions">
+          <span className={`risk-badge ${risk.toLowerCase()}`}>{risk}</span>
+          <button type="button" className="remove-permission" onClick={onRemove}>Remove permission</button>
+        </div>
       </div>
 
       {savedContracts.contracts.length > 0 && <label className="saved-contract-picker">
@@ -191,10 +196,14 @@ export function PermissionInspector({
           )}
           <AbiStatusLine
             abi={abi}
+            chainId={chainId}
             onPaste={() => setShowManualAbi(true)}
             onForget={() => void abi.forget()}
           />
         </label>
+        {isAddress(permission.targetAddress.toLowerCase()) && (
+          <div className="address-line"><AddressText chainId={chainId} address={permission.targetAddress} /></div>
+        )}
         <label>
           <span>Scope</span>
           <select
@@ -518,6 +527,9 @@ export function PermissionInspector({
                         }
                       />
                     )}
+                    {condition.operator !== "withinAllowance" && isAddress(condition.value.trim().toLowerCase()) && (
+                      <div className="condition-help"><AddressLabel chainId={chainId} address={condition.value.trim()} /> <NameEditor chainId={chainId} address={condition.value.trim()} hasLabel={false} /></div>
+                    )}
                     <small className="field-help condition-help">
                       {conditionOperatorHelp[condition.operator]}
                       {condition.operator === "withinAllowance" && allowances.length === 0 && (
@@ -558,9 +570,6 @@ export function PermissionInspector({
         </div>
       )}
 
-      <button className="delete-link" onClick={onRemove}>
-        Remove permission
-      </button>
     </>
   );
 }
@@ -568,10 +577,12 @@ export function PermissionInspector({
 /** Reports where a contract's ABI came from, or offers manual entry. */
 function AbiStatusLine({
   abi,
+  chainId,
   onPaste,
   onForget,
 }: {
   abi: ReturnType<typeof useAbi>;
+  chainId: number;
   onPaste: () => void;
   onForget: () => void;
 }) {
@@ -591,7 +602,7 @@ function AbiStatusLine({
         {abi.abi.implementation && (
           <>
             {" · "}
-            {abi.abi.proxyType ?? "proxy"} → {shortHex(abi.abi.implementation)}
+            {abi.abi.proxyType ?? "proxy"} → <AddressText chainId={chainId} address={abi.abi.implementation} />
           </>
         )}
         <button className="link-button" onClick={onForget}>

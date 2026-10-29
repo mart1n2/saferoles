@@ -5,10 +5,14 @@ import { disconnectWallets } from "./wallet-config";
 import { createWalletRpc, idleSafeInspection, type WalletProvider, type WalletSafeInspection, type WalletTransaction, type BatchSupport } from "./wallet-rpc";
 import type { SubmissionResult } from "./submission";
 export type { WalletSafeInspection, WalletTransaction, BatchSupport } from "./wallet-rpc";
+/** Wallets announce an icon as a data URI; anything else (remote URLs) is ignored. */
+export function safeWalletIcon(icon: unknown): string | null {
+  return typeof icon === "string" && /^data:image\/(png|jpeg|webp|gif|svg\+xml)[;,]/i.test(icon) ? icon : null;
+}
 export type WalletStatus = "unavailable" | "disconnected" | "connecting" | "connected";
 export type WalletState = {
   status: WalletStatus; account: string | null; chainId: number | null; error: string | null;
-  walletName: string | null; connectionId: string | null; wallets: {id:string; name:string}[]; batchSupport: BatchSupport; batchDetail: string;
+  walletName: string | null; connectionId: string | null; walletIcon: string | null; wallets: {id:string; name:string; icon: string | null}[]; batchSupport: BatchSupport; batchDetail: string;
   connect: (connectorId?: string) => Promise<void>;
   disconnect: () => Promise<void>;
   send: (transactions: WalletTransaction[]) => Promise<SubmissionResult>;
@@ -92,8 +96,8 @@ export function useWallet(): WalletState {
     catch(caught){return {...idleSafeInspection,status:"unknown",problem:caught instanceof Error ? caught.message : "Wallet unavailable.",moduleEnabled:null};}
   },[getRpc]);
   const currentProbe = probe?.identity===identity ? probe : null;
-  const wallets = useMemo(()=>connectors.filter(item=>item.id!=="injected" || connectors.length===1).map(item=>({id:item.uid,name:item.id==="injected" ? "Browser wallet" : item.name})),[connectors]);
-  return {status,account,chainId,error,connectionId:identity,walletName:connector?.name ?? null,wallets,connect,disconnect,switchChain,send,sendAtomic,getCode,readContract,inspectSafe,batchSupport:currentProbe?.support ?? "sequential",batchDetail:currentProbe?.detail ?? "",safeInspection:currentProbe?.inspection ?? {...idleSafeInspection,status:status==="connected"?"checking":"idle"}};
+  const wallets = useMemo(()=>connectors.filter(item=>item.id!=="injected" || connectors.length===1).map(item=>({id:item.uid,name:item.id==="injected" ? "Browser wallet" : item.name,icon:safeWalletIcon(item.icon)})),[connectors]);
+  return {status,account,chainId,error,connectionId:identity,walletName:connector?.name ?? null,walletIcon:safeWalletIcon(connector?.icon),wallets,connect,disconnect,switchChain,send,sendAtomic,getCode,readContract,inspectSafe,batchSupport:currentProbe?.support ?? "sequential",batchDetail:currentProbe?.detail ?? "",safeInspection:currentProbe?.inspection ?? {...idleSafeInspection,status:status==="connected"?"checking":"idle"}};
 }
 /**
  * Checks a wallet connection against the modifier it is about to reconfigure.

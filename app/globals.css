@@ -2819,3 +2819,108 @@ select:not(:focus-visible), textarea:not(:focus-visible) { border-color: var(--f
 .undo-toast button:hover { background: var(--blue-soft); }
 .undo-toast button[aria-label="Dismiss"] { color: var(--muted); padding: 4px 8px; }
 @media (max-width: 760px) { .undo-toast { left: 16px; right: 16px; max-width: none; } }
+
+/* Wallet logos, from the wallet's own announced icon. */
+.wallet-option-main { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.wallet-logo { flex: none; width: 36px; height: 36px; border-radius: 9px; object-fit: contain; }
+.wallet-logo.fallback { display: grid; place-items: center; background: var(--ink); color: var(--paper); font-weight: 700; }
+.wallet-chip .wallet-logo { width: 20px; height: 20px; border-radius: 5px; }
+
+/* Change bar: keep labels on one line and readable on the dark background. */
+.change-bar .autosave-note { color: #c3cac5; }
+.change-bar button, .change-bar .button { white-space: nowrap; }
+.change-bar > div:first-child { min-width: 0; }
+.change-bar b, .change-bar small { overflow: hidden; text-overflow: ellipsis; }
+
+/* Hints inside labels and forms stay readable. */
+.editor-page label small, .editor-page label > span > small, .local-contract-content small { font-size: 14px; }
+
+/* Copy and explorer actions beside an address. */
+.address-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 8px; vertical-align: middle; }
+.address-action { padding: 2px 8px; border: 1px solid var(--rule-strong); border-radius: 6px; background: var(--paper); color: var(--ink-2); font: inherit; font-size: 13px; font-weight: 600; line-height: 1.5; text-decoration: none; cursor: pointer; white-space: nowrap; }
+.address-action:hover { border-color: var(--blue); color: var(--blue); }
+.address-line { grid-column: 1 / -1; margin-top: -6px; }
+.address-line .address-actions { margin-left: 0; }
+.local-contract-copy .address-actions, .member-row .address-actions { margin-left: 10px; }
+.member-row .address-action { color: var(--ink-2); }
+.member-row .address-action:hover { color: var(--blue); }
+
+/* The target address sits under the clickable row, outside the button, so copy and explorer controls are valid and reachable. */
+.permission-address-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; padding: 0 56px 12px 60px; margin-top: -6px; background: var(--paper); color: var(--muted); font-size: 14px; }
+.permission-address-line code { overflow-wrap: anywhere; color: var(--ink-2); font-size: 14px; }
+.permission-address-line .address-actions { margin-left: 10px; }
+.permission-row-wrap:hover .permission-address-line { background: #fafbf8; }
+.permission-remove { top: 41px; }
+@media (max-width: 760px) { .permission-address-line { padding-left: 18px; } }
+
+.permission-address-line.condition-address { margin-top: -10px; gap: 4px 10px; }
+.condition-address-name { min-width: 64px; color: var(--ink); font-size: 14px; font-weight: 650; }
+.permission-address-line:not(.condition-address) .address-actions { margin-left: 0; }
+.permission-address-line { gap: 4px 10px; }
+
+/* Names for addresses a permission points at. */
+.named-address { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.named-address .named { color: var(--ink); font-size: 14px; }
+.named-address .unnamed { color: #8a5a00; font-size: 14px; font-style: normal; font-weight: 600; }
+.named-address .name-source { color: var(--muted); font-size: 13px; }
+.name-editor { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.name-editor input { min-height: 32px; width: 200px; padding: 4px 10px; font-size: 14px; }
+.permission-address-line.condition-address { align-items: center; }
+
+/* An address that is itself a link to the explorer, with Copy beside it. */
+.address-text { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 0; max-width: 100%; }
+.address-link { color: var(--ink-2); text-decoration: underline dotted; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.address-link:hover { color: var(--blue); text-decoration-style: solid; }
+.address-link code { color: inherit; font-size: inherit; }
+.address-text .address-actions { margin-left: 10px; }
+.member-row .address-link, .local-contract-copy .address-link { color: var(--ink-2); }
+.address-line .address-text { margin-top: 2px; }
+
+/* Permission rows: a transparent button covers the row to open it; links, Copy and remove sit above it. */
+.permission-row-wrap { background: var(--paper); }
+.permission-row-wrap:hover { background: #fafbf8; }
+.permission-open { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.permission-open:focus-visible { outline: 3px solid #c5d8ff; outline-offset: -3px; }
+/* No z-index here: a stacking context would trap the links and Copy buttons below the overlay button. */
+.permission-row-wrap .permission-row { position: relative; background: transparent; cursor: default; }
+.permission-row-wrap .permission-row:hover { background: transparent; }
+.permission-row-wrap .address-link, .permission-row-wrap .address-action, .permission-row-wrap .named-address button, .permission-row-wrap .name-editor input, .permission-row-wrap .permission-remove { position: relative; z-index: 2; }
+.permission-row-wrap .permission-remove { position: absolute; }
+.permission-row-wrap .permission-address-line { position: relative; background: transparent; pointer-events: none; }
+.permission-row-wrap .permission-address-line > * { pointer-events: auto; }
+.permission-row-wrap:hover .permission-address-line { background: transparent; }
+.target-cell b .address-text { margin-right: 6px; }
+.name-link { font-weight: 700; }
+
+/* Pinned addresses inside a review row read as a plain left-aligned line. */
+.review-row .permission-address-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 4px 10px; margin: 6px 0 0; padding: 0; text-align: left; background: transparent; }
+.review-row .condition-address-name { min-width: 0; }
+
+/* Addresses, block-explorer style: a blue link with a small copy icon beside it. */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.address-text { display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 0; max-width: 100%; }
+.address-link, .member-row .address-link, .local-contract-copy .address-link { color: var(--blue); text-decoration: none; overflow-wrap: anywhere; }
+.address-link:hover { text-decoration: underline; }
+.address-link code { color: inherit; font-size: inherit; }
+.address-name { font-weight: 650; }
+.copy-icon { flex: none; display: inline-grid; place-items: center; margin-left: 6px; padding: 3px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.copy-icon:hover, .copy-icon:focus-visible { color: var(--blue); background: var(--blue-soft); }
+.condition-chip.with-address { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.condition-chip.with-address .address-text { vertical-align: middle; }
+.permission-row-wrap .copy-icon { position: relative; z-index: 2; }
+.pinned-addresses { display: inline-flex; flex-wrap: wrap; gap: 4px 14px; margin-left: 10px; }
+.pinned-address { display: inline-flex; align-items: center; gap: 4px; }
+.review-row .copy-icon { margin-left: 4px; }
+
+/* Cards opened by a transparent button that covers them; links and copy icons sit above it. */
+.card-open { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
+.card-open:focus-visible { outline: 3px solid #c5d8ff; outline-offset: 2px; }
+.modifier-card { position: relative; cursor: default; }
+.modifier-card .address-link, .modifier-card .copy-icon { position: relative; z-index: 2; }
+.modifier-card-identity .address-text { justify-content: flex-end; }
+
+/* Remove sits in the heading, where it stays reachable on a long form. */
+.inspector-heading-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
+.remove-permission { padding: 6px 12px; border: 1px solid #e3b9b4; border-radius: 8px; background: var(--paper); color: var(--red); font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; white-space: nowrap; }
+.remove-permission:hover, .remove-permission:focus-visible { background: #fdecea; border-color: var(--red); }
+.contract-mark svg { display: block; }

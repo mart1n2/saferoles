@@ -28,7 +28,9 @@ import { ScopePicker } from "./components/scope-picker";
 import { ContractName } from "./components/contract-name";
 import { PermissionConditions } from "./components/permission-conditions";
 import { isBlankPermission } from "./lib/policy-codec";
-import { baselineRoleFor, permissionChange, roleChanged } from "./lib/draft-changes";
+import { AddressLabel, AddressText } from "./components/address-link";
+import { ContractIcon } from "./components/contract-icon";
+import { baselineRoleFor, permissionChange, roleChanged, summarizeChanges } from "./lib/draft-changes";
 import { UNWRAP_TARGETS } from "./lib/unwrappers";
 import { useUnwrapperStates } from "./lib/use-unwrappers";
 import type { DraftPolicy } from "./lib/policy";
@@ -92,13 +94,6 @@ function describePermissionFunction(
   if (permission.signatureLabel) return permission.signatureLabel;
   if (permission.signature) return permission.signature;
   return describeSelector(permission.selector, selectorNames);
-}
-
-/** Glyph for a permission: its label if it has one, else the target address. */
-function permissionGlyph(permission: DraftPermission): string {
-  if (permission.name.trim()) return initials(permission.name);
-  const address = permission.targetAddress.replace(/^0x/, "");
-  return address ? address.slice(0, 2).toUpperCase() : "··";
 }
 
 export default function Home() {
@@ -263,7 +258,7 @@ export default function Home() {
 
   if(!policy.scope) return <ScopePicker safe={safe} wallet={wallet} mods={mods} modsLoading={modsLoading} modsError={modsError} onSelect={openScope} onSetUp={setupSafeAddress?()=>setShowSetup(true):undefined}/>;
 
-  if(policy.status==="loading" || policy.status==="idle") return <main className="app-shell boot"><div className="boot-card"><span className="brand-mark" aria-hidden="true">SR</span><h1>Reading policy</h1><p>{shortHex(policy.scope.rolesMod,10,8)} on {chainName(policy.scope.chainId)}</p></div></main>;
+  if(policy.status==="loading" || policy.status==="idle") return <main className="app-shell boot"><div className="boot-card"><span className="brand-mark" aria-hidden="true">SR</span><h1>Reading policy</h1><p>{shortHex(policy.scope.rolesMod)} on {chainName(policy.scope.chainId)}</p></div></main>;
 
   if(policy.status==="error" || !draft) return <main className="app-shell boot"><div className="boot-card error"><h1>Could not read the policy</h1><p>{policy.error}</p><div className="boot-actions"><button className="button secondary" onClick={()=>void policy.reload()}>Try again</button><button className="button ghost" onClick={()=>setShowScope(true)}>Choose a different modifier</button></div></div></main>;
 
@@ -303,7 +298,7 @@ export default function Home() {
       <a className="brand" href="/" aria-label="SafeRoles home"><span className="brand-mark" aria-hidden="true">SR</span><span>SafeRoles</span></a>
       <button className="workspace-switcher" onClick={()=>setShowScope(true)}><span className="network-dot" aria-hidden="true"/><span><b>{chainName(policy.scope.chainId)}</b><small>Modifier · {shortHex(policy.scope.rolesMod)}</small></span><span aria-hidden="true">⌄</span></button>
       <div className="top-actions"><ApiKeySettings/>
-        {safe.mode==="safe-app" && safe.info ? <span className="wallet-chip" title={safe.info.safeAddress}><span className="wallet-status-dot"/>{shortHex(safe.info.safeAddress)}<small>Safe App · {safe.info.threshold}/{safe.info.owners.length}</small></span>:<WalletControl wallet={wallet}/>}
+        {safe.mode==="safe-app" && safe.info ? <span className="wallet-chip" title={safe.info.safeAddress}><span className="wallet-status-dot"/><AddressText chainId={policy.scope.chainId} address={safe.info.safeAddress}/><small>Safe App · {safe.info.threshold}/{safe.info.owners.length}</small></span>:<WalletControl wallet={wallet}/>}
         <button className="button ghost" onClick={()=>setShowDrafts(true)}>Drafts{drafts.drafts.length?` (${drafts.drafts.length})`:""}</button>
         <button className="button ghost" onClick={()=>void policy.reload()}>Refresh</button>
         <button className="button primary" onClick={()=>setShowReview(true)} disabled={plan.changes.length===0 && blockingIssues.length===0} title={plan.changes.length===0 && blockingIssues.length===0?"No changes to review yet":undefined}>{blockingIssues.length?`${blockingIssues.length} to fix`:plan.changes.length?`Review ${plan.changes.length} changes`:"Review"}</button>
@@ -368,8 +363,10 @@ export default function Home() {
         <div className="banner info compact" role="status">
           <b>Restored unsaved edits</b>
           <span>
-            Recovered from this browser ({new Date(policy.recovered.savedAt).toLocaleString()}) and
-            compared with the current policy. Nothing has been submitted.
+            Your unsaved edits from {new Date(policy.recovered.savedAt).toLocaleString()} are shown, not the
+            indexed policy
+            {policy.baseline && policy.draft ? ` — ${summarizeChanges(policy.baseline, policy.draft).join(", ") || "no differences"}` : ""}.
+            Discard to see the indexed policy.
           </span>
           <span className="banner-actions">
             <button className="button ghost" onClick={policy.discard}>Discard</button>
@@ -461,7 +458,7 @@ export default function Home() {
           </form>}
           <div className="role-list">
             {filteredRoles.map((role) => {
-              const roleRisk = highestRisk(role.permissions.map(draftPermissionRisk));
+              const roleRisk = highestRisk(role.permissions.filter((item) => !isBlankPermission(item)).map(draftPermissionRisk));
               const roleEdited = roleChanged(baselineRoleFor(policy.baseline, role), role);
               return (
                 <button
@@ -650,7 +647,7 @@ export default function Home() {
             <>
               <div className="breadcrumbs">
                 {chainName(policy.scope.chainId)} <span>/</span>{" "}
-                {policy.facts ? shortHex(policy.facts.avatar) : "Safe"} <span>/</span> Roles
+                {policy.facts ? <AddressText chainId={policy.scope.chainId} address={policy.facts.avatar} /> : "Safe"} <span>/</span> Roles
               </div>
               <header className="role-header">
                 <div>
@@ -727,7 +724,7 @@ export default function Home() {
                     onClick={() => setTab(item)}
                   >
                     {item}
-                    {item === "Permissions" && <span>{selectedRole.permissions.length}</span>}
+                    {item === "Permissions" && <span>{selectedRole.permissions.filter((entry) => !isBlankPermission(entry)).length}</span>}
                     {item === "Members" && <span>{selectedRole.members.length}</span>}
                   </button>
                 ))}
@@ -769,16 +766,24 @@ export default function Home() {
                           return (
                             <div className={`permission-row-wrap ${change ? "changed" : ""}`} key={permission.id}>
                             <button
-                              className="permission-row"
+                              className="permission-open"
+                              aria-labelledby={`perm-${permission.id}-name perm-${permission.id}-fn`}
                               onClick={() => setSelectedPermissionId(permission.id)}
-                            >
+                            />
+                            <div className="permission-row">
                               <span className="target-cell">
                                 <span className="contract-mark" aria-hidden="true">
-                                  {permissionGlyph(permission)}
+                                  <ContractIcon />
                                 </span>
                                 <span>
-                                  <b><ContractName chainId={policy.scope!.chainId} address={permission.targetAddress} label={permission.name}/>{change && <span className="change-chip" title="Not yet submitted">{change === "new" ? "New" : "Edited"}</span>}</b>
+                                  <b>
+                                    {permission.targetAddress
+                                      ? <AddressLabel chainId={policy.scope!.chainId} address={permission.targetAddress} label={permission.name} nameId={`perm-${permission.id}-name`}/>
+                                      : <><span id={`perm-${permission.id}-name`}><ContractName chainId={policy.scope!.chainId} address="" label={permission.name}/></span> <small>no address yet</small></>}
+                                    {change && <span className="change-chip" title="Not yet submitted">{change === "new" ? "New" : "Edited"}</span>}
+                                  </b>
                                   <code
+                                    id={`perm-${permission.id}-fn`}
                                     title={
                                       permission.mode === "target"
                                         ? "Every function on this contract"
@@ -797,7 +802,6 @@ export default function Home() {
                                           selectorNames,
                                         )}
                                   </code>
-                                  <small>{permission.targetAddress || "no address yet"}</small>
                                 </span>
                               </span>
                               <span className="constraint-cell">
@@ -811,7 +815,7 @@ export default function Home() {
                                 )}
                               </span>
                               <span className={`risk-badge ${risk.toLowerCase()}`} title={riskReason(permission)}>{risk}</span>
-                            </button>
+                            </div>
                             <button
                               className="row-remove permission-remove"
                               aria-label={`Remove permission ${permission.name || shortHex(permission.targetAddress) || "New target"}`}
@@ -906,7 +910,7 @@ export default function Home() {
                             }
                           />
                         </span>
-                        <code title={member.address}>{shortHex(member.address, 10, 8)}</code>
+                        <AddressText chainId={policy.scope!.chainId} address={member.address}/>
                         <button
                           aria-label={`Remove member ${member.label || shortHex(member.address)}`}
                           onClick={() =>

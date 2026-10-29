@@ -42,7 +42,8 @@ export function summarizeCondition(condition: Condition | undefined, context: Co
 }
 
 export type ConditionSummaryContext = { signature?: string; token?: { decimals: number; symbol: string } | null };
-export type ConditionSummaryLine = { text: string; title: string };
+/** `lead` and `address` are set when the line pins an address parameter, so a UI can render the address itself as a link. */
+export type ConditionSummaryLine = { text: string; title: string; lead?: string; address?: string };
 
 /** Only standard ERC-20 amount positions; an arbitrary uint may be an id or timestamp. */
 export function tokenAmountIndex(signature: string | undefined): number | null {
@@ -96,6 +97,7 @@ export function conditionSummaryDetails(condition: Condition | undefined, contex
         }
       }
     } catch { /* Malformed or unsupported values stay raw. */ }
-    return [{ text: `${label} ${verb} ${shown}`, title: `${label} ${verb} ${exact}. Display only; the deployed condition is preserved.` }];
+    const pinnedAddress = param?.type === "address" && child.operator === Operator.EqualTo && /^0x[0-9a-fA-F]{40}$/.test(exact) ? exact : undefined;
+    return [{ text: `${label} ${verb} ${shown}`, title: `${label} ${verb} ${exact}. Display only; the deployed condition is preserved.`, ...(pinnedAddress ? { lead: `${label} ${verb}`, address: pinnedAddress } : {}) }];
   });
 }

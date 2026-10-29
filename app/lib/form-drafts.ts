@@ -12,6 +12,7 @@
  * instead of being handed to the UI. API keys are deliberately never stored
  * here: they live in the separate encrypted credential envelope.
  */
+import { policyChanged } from "./draft-changes";
 import { localRead, localUpdate } from "./local-db";
 import {
   MAX_DRAFT_BODY_BYTES,
@@ -247,7 +248,7 @@ export function isRecoveredPolicyChange(
   restored: PolicyWorkingCopy,
   baseline: DraftPolicy,
 ): boolean {
-  return stringify(restored.policy) !== stringify(baseline);
+  return policyChanged(baseline, restored.policy);
 }
 
 /** True when a restored working copy was based on a different indexed snapshot. */

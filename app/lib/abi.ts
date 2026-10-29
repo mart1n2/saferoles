@@ -163,7 +163,8 @@ export function parseValue(param: ParamType, raw: string): unknown {
  * Formats an allowance/role key for display, decoding bytes32-encoded strings
  * back to their readable form when possible.
  */
-export function shortHex(value: string, lead = 6, tail = 4): string {
+/** Addresses read as 6 hex digits after the 0x and the last 6, such as 0xA0b869…06eB48. */
+export function shortHex(value: string, lead = 8, tail = 6): string {
   if (!value.startsWith("0x") || value.length <= lead + tail + 2) return value;
   return `${value.slice(0, lead)}…${value.slice(-tail)}`;
 }

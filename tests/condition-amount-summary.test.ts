@@ -18,7 +18,7 @@ test("ABI parameter names and exact token decimals replace positional base-unit 
   const input = condition(1_000_000_000n);
   const before = JSON.stringify(input);
   const lines = conditionSummaryDetails(input, { signature, token });
-  assert.equal(lines[0]!.text, "to = 0x5112…497F");
+  assert.equal(lines[0]!.text, "to = 0x511200…00497F");
   assert.equal(lines[1]!.text, "value < 1,000 USDC");
   assert.match(lines[1]!.title, /1000000000 base units/);
   assert.equal(JSON.stringify(input), before);

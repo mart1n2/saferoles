@@ -64,7 +64,7 @@ export function ScopePicker({ safe, wallet, mods, modsLoading, modsError, onSele
         const sameChain = mod.chainId === selected.chainId;
         const governed = mod.owner.toLowerCase() === selected.address.toLowerCase() && mod.avatar.toLowerCase() === selected.address.toLowerCase();
         return <button className="mod-option" key={`${mod.chainId}:${mod.address}`} onClick={() => onSelect({ chainId: mod.chainId, rolesMod: mod.address })}>
-          <span><b>{shortHex(mod.address, 12, 10)}</b><small>{chainName(mod.chainId)} · {sameChain && governed ? "Owned by and acting on this Safe" : "Different chain or governance · inspect configuration"}</small></span>
+          <span><b>{shortHex(mod.address)}</b><small>{chainName(mod.chainId)} · {sameChain && governed ? "Owned by and acting on this Safe" : "Different chain or governance · inspect configuration"}</small></span>
           <span className={`health-badge ${sameChain && governed ? "" : "warn"}`}>{sameChain && governed ? "Open roles" : "Inspect"}</span>
         </button>;
       })}</div>

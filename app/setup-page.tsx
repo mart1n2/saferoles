@@ -626,7 +626,7 @@ function SetupForm({
             <div className="review-summary">
               <div>
                 <span>Modifier address</span>
-                <strong className="mono-strong">{shortHex(plan.predictedAddress, 10, 8)}</strong>
+                <strong className="mono-strong">{shortHex(plan.predictedAddress)}</strong>
               </div>
               <div>
                 <span>Owner, avatar &amp; target</span>

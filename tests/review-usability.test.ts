@@ -12,7 +12,7 @@ test("deployed conditions read as plain constraints",()=>{
     {paramType:1,operator:0,children:[]},
     {paramType:1,operator:18,compValue:"0x00000000000000000000000000000000000000000000000000000000000f4240",children:[]},
   ]} as never);
-  assert.deepEqual(lines,["arg 0 = 0x8787…a4e2","arg 2 < 1000000"]);
+  assert.deepEqual(lines,["arg 0 = 0x87870b…4fa4e2","arg 2 < 1000000"]);
   assert.equal(shortWord(undefined),"…");
 });
 test("a never-started permission is neither an error nor a request",()=>{

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { baselineRoleFor, permissionChange, roleChanged } from "../app/lib/draft-changes";
+import { baselineRoleFor, permissionChange, policyChanged, roleChanged, summarizeChanges } from "../app/lib/draft-changes";
 import type { DraftPermission, DraftRole } from "../app/lib/policy";
 
 const permission = (over: Partial<DraftPermission> = {}): DraftPermission => ({
@@ -64,4 +64,47 @@ test("adopting a signature for an imported selector is an edit, not a new permis
   const adopted = permission({ signature: "approve(address,uint256)", selector: undefined, send: true });
   assert.equal(permissionChange(role([imported]), adopted), "edited");
   assert.equal(permissionChange(role([imported]), permission({ signature: "approve(address,uint256)", selector: undefined })), null);
+});
+
+test("a role whose permissions were only decoded from raw conditions is unchanged", () => {
+  const raw = { paramType: 5, operator: 5, children: [] } as never;
+  const base = role([permission({ signature: "", selector: "0x095ea7b3", rawCondition: raw })]);
+  const decoded = role([permission({ signature: "approve(address,uint256)", signatureLabel: "approve(address, uint256)", selector: "0x095ea7b3", rawCondition: undefined })]);
+  assert.equal(roleChanged(base, decoded), false);
+  assert.equal(roleChanged(base, { ...decoded, name: "Renamed" }), true);
+  assert.equal(roleChanged(base, role([permission({ signature: "", selector: "0xa9059cbb", rawCondition: raw })])), true);
+});
+
+const policyOf = (roles: DraftRole[]) => ({ chainId: 1, rolesMod: "0x0f253F99a3AC0122cc9ef0d61e35F27d6d017269", roles, allowances: [] });
+
+test("a draft that only differs by decoding, ids or a blank permission is not a change", () => {
+  const raw = { paramType: 5, operator: 5, children: [] } as never;
+  const base = policyOf([{ ...role([permission({ signature: "", selector: "0x095ea7b3", rawCondition: raw })]), deployedKey: "0xabc" }]);
+  const decoded = { ...role([permission({ id: "other", signature: "approve(address,uint256)", selector: "0x095ea7b3", rawCondition: undefined }), permission({ id: "blank", name: "", targetAddress: "", signature: "" })]), id: "role-9", deployedKey: "0xabc" };
+  assert.equal(policyChanged(base, policyOf([decoded])), false);
+});
+
+test("a real edit, role rename or removed role is a change", () => {
+  const base = policyOf([{ ...role([permission()]), deployedKey: "0xabc" }]);
+  assert.equal(policyChanged(base, policyOf([{ ...role([permission({ send: true })]), deployedKey: "0xabc" }])), true);
+  assert.equal(policyChanged(base, policyOf([{ ...role([permission()]), deployedKey: "0xabc", name: "x" }])), true);
+  assert.equal(policyChanged(base, policyOf([])), true);
+  assert.equal(policyChanged(base, { ...policyOf([{ ...role([permission()]), deployedKey: "0xabc" }]), allowances: [{ id: "a", key: "k", balance: "1", maxRefill: "1", refill: "1", period: "0", timestamp: "0" }] }), true);
+});
+
+test("summary says what differs from the indexed policy", () => {
+  const other = permission({ id: "p2", targetAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7", signature: "transfer(address,uint256)" });
+  const base = policyOf([{ ...role([permission(), other]), deployedKey: "0xabc" }]);
+  const draft = {
+    ...policyOf([{ ...role([permission()]), deployedKey: "0xabc" }]),
+    allowances: [{ id: "a", key: "usd", balance: "1", maxRefill: "1", refill: "1", period: "0", timestamp: "0" }],
+  };
+  assert.deepEqual(summarizeChanges(base, draft), ["1 permission removed", "1 allowance added"]);
+  assert.deepEqual(summarizeChanges(base, base), []);
+});
+
+test("a blank, never-started permission does not make the role edited", () => {
+  const base = role([permission()]);
+  const withBlank = role([permission(), permission({ id: "blank", name: "", targetAddress: "", signature: "" })]);
+  assert.equal(roleChanged(base, withBlank), false);
 });

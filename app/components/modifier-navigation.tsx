@@ -1,5 +1,5 @@
-import { shortHex } from "../lib/abi";
 import { chainName } from "../lib/chains";
+import { AddressText } from "./address-link";
 
 /** The workspace identity stays together, independent of the connected wallet. */
 export function ModifierNavigation({ address, safeAddress, chainId, active, onOpen }: {
@@ -10,7 +10,8 @@ export function ModifierNavigation({ address, safeAddress, chainId, active, onOp
   onOpen: () => void;
 }) {
   return <nav className="modifier-navigation" aria-label="Modifier configuration">
-    <button type="button" className={`modifier-card ${active ? "active" : ""}`} aria-label="Roles config" aria-current={active ? "page" : undefined} onClick={onOpen}>
+    <div className={`modifier-card ${active ? "active" : ""}`}>
+      <button type="button" className="card-open modifier-open" aria-label="Roles config" aria-current={active ? "page" : undefined} onClick={onOpen} />
       <span className="modifier-card-heading">
         <span className="role-glyph" aria-hidden="true">⚙</span>
         <span><b>Roles config</b><small>Shared across all roles</small></span>
@@ -18,9 +19,9 @@ export function ModifierNavigation({ address, safeAddress, chainId, active, onOp
       </span>
       <span className="modifier-card-identity">
         <span><span>Network</span><b>{chainName(chainId)}</b></span>
-        <span><span>Roles</span><code title={address}>{shortHex(address, 6, 4)}</code></span>
-        <span><span>Safe</span><code title={safeAddress ?? undefined}>{safeAddress ? shortHex(safeAddress, 6, 4) : "Unavailable"}</code></span>
+        <span><span>Roles</span><AddressText chainId={chainId} address={address} /></span>
+        <span><span>Safe</span>{safeAddress ? <AddressText chainId={chainId} address={safeAddress} /> : <code>Unavailable</code>}</span>
       </span>
-    </button>
+    </div>
   </nav>;
 }

@@ -76,7 +76,6 @@ export function FunctionPicker({
           }
         }}
       />
-      {selected && !query && <small className="function-picker-current">Selected: <code>{selected.readable}</code></small>}
       {open && (
         <ul className="function-picker-list" role="listbox" id={listId}>
           {matches.length === 0 && <li className="function-picker-empty">No function matches “{query}”.</li>}
