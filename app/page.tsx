@@ -409,7 +409,7 @@ export default function Home() {
           <p>
             {baselineNotice === "changed"
               ? "The indexed baseline changed after this review opened. No transaction was submitted. The diff now uses the newer snapshot; open review again and inspect the rebuilt calls."
-              : "Another proposal was already submitted from this baseline. New submissions are blocked until the indexer observes the resulting policy, preventing a second diff from being built on stale state."}
+              : "Another proposal was already submitted from this baseline. New submissions from this baseline are blocked until the indexer observes the resulting policy, so calls that already went out are not sent again. This holds across reloads and ends on its own after 15 minutes."}
           </p>
           <button
             className="button secondary"

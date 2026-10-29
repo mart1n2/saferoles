@@ -19,8 +19,13 @@ import { policyChanged } from "./draft-changes";
 import {
   clearSavedForm,
   formKeys,
+  clearSubmissionMark,
   isRecoveredPolicyChange,
   parsePolicyWorkingCopy,
+  readSubmissionMark,
+  rememberSubmission,
+  submissionBlocks,
+  SUBMISSION_BLOCK_MS,
   readSavedForm,
   writeSavedForm,
   type PolicyWorkingCopy,
@@ -154,6 +159,7 @@ export function usePolicy(): PolicyState {
   const loadToken = useRef(0);
   const scopeRef = useRef<Scope | null>(null);
   const submittedBaseHash = useRef<string | null>(null);
+  const submittedAt = useRef(0);
 
   const load = useCallback(async (next: Scope) => {
     const token = ++loadToken.current;
@@ -189,6 +195,18 @@ export function usePolicy(): PolicyState {
         hash !== submittedBaseHash.current
       ) {
         submittedBaseHash.current = null;
+      }
+
+      // A submission is remembered across reloads: until the indexer shows the
+      // resulting state, a diff rebuilt from this same baseline would send the
+      // calls that already went out a second time.
+      const mark = await readSubmissionMark(next.chainId, next.rolesMod);
+      if (token !== loadToken.current) return;
+      if (submissionBlocks(mark, hash)) {
+        submittedBaseHash.current = hash;
+        submittedAt.current = mark!.savedAt;
+      } else if (mark) {
+        void clearSubmissionMark(next.chainId, next.rolesMod);
       }
 
       // Unsaved edits are restored as a diff against the snapshot just read,
@@ -290,7 +308,7 @@ export function usePolicy(): PolicyState {
       throw new Error("The open modifier changed while its baseline was checked.");
     }
 
-    if (submittedBaseHash.current === hash) {
+    if (submittedBaseHash.current === hash && Date.now() - submittedAt.current < SUBMISSION_BLOCK_MS) {
       return {
         fresh: false,
         reason: "indexer-pending",
@@ -307,6 +325,7 @@ export function usePolicy(): PolicyState {
       setPristine(JSON.stringify(imported));
       setStatus("loaded");
       submittedBaseHash.current = null;
+      void clearSubmissionMark(active.chainId, active.rolesMod);
       return {
         fresh: false,
         reason: "changed",
@@ -319,11 +338,13 @@ export function usePolicy(): PolicyState {
 
   const markSubmitted = useCallback(() => {
     submittedBaseHash.current = baseHash;
+    submittedAt.current = Date.now();
     skipAutosave.current = true;
     setRecovered(null);
     setAutosavedAt(null);
     const active = scopeRef.current;
     if (active) void clearSavedForm(formKeys.policy(active.chainId, active.rolesMod));
+    if (active && baseHash) void rememberSubmission(active.chainId, active.rolesMod, baseHash);
   }, [baseHash]);
 
   const baseline = useMemo(() => (pristine ? (JSON.parse(pristine) as DraftPolicy) : null), [pristine]);
