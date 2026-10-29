@@ -7,7 +7,7 @@ import { useFunctionNames } from "./lib/use-abi";
 import { ContractName } from "./components/contract-name";
 import { PinnedAddresses } from "./components/permission-conditions";
 import type { DraftPermission } from "./lib/policy";
-import { AddressText } from "./components/address-link";
+import { TextWithAddresses } from "./components/address-link";
 import { safeTransactionUrl } from "./lib/chains";
 import type { DraftPolicy, PolicyIssue } from "./lib/policy";
 import type { ChainFacts, Scope, usePolicy } from "./lib/use-policy";
@@ -336,11 +336,7 @@ export function ReviewPage({
                   </b>
                   <small>
                     {change.scope} ·{" "}
-                    {(() => {
-                      const address = (change.call as { targetAddress?: string }).targetAddress;
-                      if (!address || !change.detail.startsWith(address)) return change.detail;
-                      return <><AddressText chainId={scope.chainId} address={address} />{change.detail.slice(address.length)}</>;
-                    })()}
+                    <TextWithAddresses chainId={scope.chainId} text={change.detail} />
                   </small>
                   {(() => {
                     // Who a grant points at: the pinned address parameters, by name.

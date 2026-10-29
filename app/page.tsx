@@ -107,7 +107,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const unwrapperStates = useUnwrapperStates(policy.scope?.chainId ?? null, policy.scope?.rolesMod ?? null);
   // The draft right after a removal, so Undo is offered only until the next edit.
-  const [undo, setUndo] = useState<{ label: string; message?: string; before: DraftPolicy; after: DraftPolicy | null } | null>(null);
+  const [undo, setUndo] = useState<{ label: string; message?: string; target?: { address: string; name: string; fn: string }; before: DraftPolicy; after: DraftPolicy | null } | null>(null);
   const [showScope, setShowScope] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [showDrafts, setShowDrafts] = useState(false);
@@ -263,11 +263,11 @@ export default function Home() {
   if(policy.status==="error" || !draft) return <main className="app-shell boot"><div className="boot-card error"><h1>Could not read the policy</h1><p>{policy.error}</p><div className="boot-actions"><button className="button secondary" onClick={()=>void policy.reload()}>Try again</button><button className="button ghost" onClick={()=>setShowScope(true)}>Choose a different modifier</button></div></div></main>;
 
   /** Removes something from the draft and offers Undo until the next edit. */
-  const removeWithUndo = (label: string, transform: (current: DraftPolicy) => DraftPolicy) => {
+  const removeWithUndo = (label: string, transform: (current: DraftPolicy) => DraftPolicy, target?: { address: string; name: string; fn: string }) => {
     const before = draft;
     const after = transform(before);
     policy.setDraft(() => after);
-    setUndo({ label, before, after });
+    setUndo({ label, target, before, after });
   };
   /** Throws away unsaved edits, but keeps them recoverable with Undo until the next edit. */
   const discardWithUndo = () => {
@@ -275,11 +275,12 @@ export default function Home() {
     policy.discard();
     setUndo({ label: "", message: "Discarded your unsaved edits.", before, after: null });
   };
-  const removePermissionFromList = (roleId: string, permissionId: string, label: string) => {
-    removeWithUndo(`permission ${label}`, (current) => ({
+  const removePermissionFromList = (roleId: string, permission: DraftPermission) => {
+    const fn = permission.mode === "target" ? "all functions" : describePermissionFunction(permission, functionNames, selectorNames).split("(")[0];
+    removeWithUndo(`permission ${permission.name || shortHex(permission.targetAddress) || "(new)"}`, (current) => ({
       ...current,
-      roles: current.roles.map((role) => role.id === roleId ? { ...role, permissions: role.permissions.filter((item) => item.id !== permissionId) } : role),
-    }));
+      roles: current.roles.map((role) => role.id === roleId ? { ...role, permissions: role.permissions.filter((item) => item.id !== permission.id) } : role),
+    }), { address: permission.targetAddress, name: permission.name, fn });
     setSelectedPermissionId(null);
   };
 
@@ -829,7 +830,7 @@ export default function Home() {
                               className="row-remove permission-remove"
                               aria-label={`Remove permission ${permission.name || shortHex(permission.targetAddress) || "New target"}`}
                               title="Remove permission"
-                              onClick={() => removePermissionFromList(selectedRole.id, permission.id, permission.name || shortHex(permission.targetAddress) || "(new)")}
+                              onClick={() => removePermissionFromList(selectedRole.id, permission)}
                             >
                               ×
                             </button>
@@ -852,7 +853,7 @@ export default function Home() {
                         onChange={(update) =>
                           editPermission(selectedRole.id, selectedPermission.id, update)
                         }
-                        onRemove={() => removePermissionFromList(selectedRole.id, selectedPermission.id, selectedPermission.name || shortHex(selectedPermission.targetAddress) || "(new)")}
+                        onRemove={() => removePermissionFromList(selectedRole.id, selectedPermission)}
                       />
                   </section>}
                 </div>
@@ -957,7 +958,7 @@ export default function Home() {
 
       {undo && (undo.after === null ? !policy.dirty : draft === undo.after) && (
         <div className="undo-toast" role="status">
-          <span>{undo.message ?? `Removed ${undo.label}.`}</span>
+          <span>{undo.message ?? (undo.target ? <>Removed permission <b><ContractName chainId={policy.scope!.chainId} address={undo.target.address} label={undo.target.name} /></b> · {undo.target.fn}.</> : `Removed ${undo.label}.`)}</span>
           <button onClick={() => { policy.setDraft(() => undo.before); setUndo(null); }}>Undo</button>
           <button aria-label="Dismiss" onClick={() => setUndo(null)}>×</button>
         </div>

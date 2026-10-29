@@ -91,3 +91,14 @@ export function AddressLabel({ chainId, address, label, nameId }: { chainId: num
     </span>
   );
 }
+
+/** Plain text in which every full address becomes an explorer link with a copy icon. */
+export function TextWithAddresses({ chainId, text }: { chainId: number | null; text: string }) {
+  return (
+    <>
+      {text.split(/(0x[0-9a-fA-F]{40})/g).map((part, index) =>
+        /^0x[0-9a-fA-F]{40}$/.test(part) ? <AddressText key={index} chainId={chainId} address={part} /> : part,
+      )}
+    </>
+  );
+}

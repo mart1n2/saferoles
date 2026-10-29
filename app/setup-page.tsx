@@ -18,6 +18,7 @@ import { PermissionInspector } from "./permission-inspector";
 import { buildInitializationPlan, suggestRoleKey, verifyInitialization } from "./lib/initialization";
 import type { DraftRole } from "./lib/policy";
 import { shortHex } from "./lib/abi";
+import { AddressText, TextWithAddresses } from "./components/address-link";
 import { chainName, hasOfficialRoles, zodiacAppUrl } from "./lib/chains";
 import type { ResolvedAbi } from "./lib/abi-source";
 import {
@@ -435,7 +436,7 @@ function SetupForm({
             <span className="eyebrow">First-time setup</span>
             <h1 id="setup-title">Set up role permissions</h1>
             <p>
-              {shortHex(safeAddress)} · {chainName(chainId)}. Configure the first role,
+              <AddressText chainId={chainId} address={safeAddress} /> · {chainName(chainId)}. Configure the first role,
               then review and approve the complete setup together.
             </p>
           </div>
@@ -507,7 +508,7 @@ function SetupForm({
               }}>Add member</button>
             </div>
             {role.members.map(member => <div className="setup-member" key={member.id}>
-              <code>{member.address}</code><button aria-label={`Remove member ${member.address}`} onClick={() => setRole(current => ({ ...current, members: current.members.filter(m => m.id !== member.id) }))}>Remove</button>
+              <AddressText chainId={chainId} address={member.address} full /><button aria-label={`Remove member ${member.address}`} onClick={() => setRole(current => ({ ...current, members: current.members.filter(m => m.id !== member.id) }))}>Remove</button>
             </div>)}
             <div className="section-label"><div><b>Permissions</b><span>Only the calls configured here will be allowed</span></div>
               {role.permissions.length>0 && <button type="button" className="button secondary" onClick={addPermission}>Add permission</button>}
@@ -548,6 +549,7 @@ function SetupForm({
             readOnly
             placeholder="0x…"
           />
+          <span className="address-line"><AddressText chainId={chainId} address={mastercopy} /></span>
           <small>
             Setup is pinned to the approved Roles implementation. Its exact deployed
             runtime and the factory runtime are verified below before submission.
@@ -562,7 +564,7 @@ function SetupForm({
               </span>
               <span>
                 <b>{check.label}</b>
-                <small>{check.detail}</small>
+                <small><TextWithAddresses chainId={chainId} text={check.detail} /></small>
               </span>
             </div>
           ))}
@@ -626,11 +628,11 @@ function SetupForm({
             <div className="review-summary">
               <div>
                 <span>Modifier address</span>
-                <strong className="mono-strong">{shortHex(plan.predictedAddress)}</strong>
+                <strong className="mono-strong"><AddressText chainId={chainId} address={plan.predictedAddress} /></strong>
               </div>
               <div>
                 <span>Owner, avatar &amp; target</span>
-                <strong className="mono-strong">{shortHex(safeAddress)}</strong>
+                <strong className="mono-strong"><AddressText chainId={chainId} address={safeAddress} /></strong>
               </div>
               <div>
                 <span>Salt</span>
@@ -649,8 +651,8 @@ function SetupForm({
                 <span>
                   <b>Deploy the modifier</b>
                   <small>
-                    Through the Zodiac factory at {shortHex(MODULE_PROXY_FACTORY)} · lands at{" "}
-                    {plan.predictedAddress}
+                    Through the Zodiac factory at <AddressText chainId={chainId} address={MODULE_PROXY_FACTORY} /> · lands at{" "}
+                    <AddressText chainId={chainId} address={plan.predictedAddress} />
                   </small>
                   <small className="rationale">
                     Owner, avatar and target are all this Safe: the Safe governs the
@@ -663,7 +665,7 @@ function SetupForm({
                 <span className="change-glyph added">+</span>
                 <span>
                   <b>Enable it as a Safe module</b>
-                  <small>{safeAddress} · enableModule</small>
+                  <small><AddressText chainId={chainId} address={safeAddress} /> · enableModule</small>
                   <small className="rationale">
                     Grants the modifier authority to execute from this Safe.
                     The first role and its permissions are configured in this same atomic batch.
@@ -673,7 +675,7 @@ function SetupForm({
               </div>
               {plan.changes.map(change => <div className="review-row" key={change.id}>
                 <span className="change-glyph added">+</span>
-                <span><b>{change.summary}</b><small>{change.scope} · {change.detail}</small>{change.rationale && <small className="rationale">{change.rationale}</small>}</span>
+                <span><b>{change.summary}</b><small>{change.scope} · <TextWithAddresses chainId={chainId} text={change.detail} /></small>{change.rationale && <small className="rationale">{change.rationale}</small>}</span>
                 <span className={`risk-badge ${change.risk.toLowerCase()}`}>{change.risk}</span>
               </div>)}
             </div>
