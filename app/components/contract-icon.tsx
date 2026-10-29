@@ -8,3 +8,13 @@ export function ContractIcon() {
     </svg>
   );
 }
+
+/** One fixed icon for a role member (an account), never derived from its address. */
+export function MemberIcon() {
+  return (
+    <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true" focusable="false">
+      <circle cx="10" cy="7" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M3.8 16.5c.7-3 3.1-4.6 6.2-4.6s5.5 1.6 6.2 4.6" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}

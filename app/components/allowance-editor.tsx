@@ -78,7 +78,7 @@ export function AllowanceEditor({
         />
           <small>Use this name to select the shared budget in a permission condition.</small>
         </label>
-        <button className="row-remove" aria-label="Remove allowance" title="Remove allowance" onClick={onRemove}>×</button>
+        <button type="button" className="remove-permission" title="Remove this allowance. You can undo until your next edit." onClick={onRemove}>Remove allowance</button>
       </div>
       <p className="allowance-usage">
         {usedBy.length > 0

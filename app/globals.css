@@ -2924,3 +2924,21 @@ select:not(:focus-visible), textarea:not(:focus-visible) { border-color: var(--f
 .remove-permission { padding: 6px 12px; border: 1px solid #e3b9b4; border-radius: 8px; background: var(--paper); color: var(--red); font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; white-space: nowrap; }
 .remove-permission:hover, .remove-permission:focus-visible { background: #fdecea; border-color: var(--red); }
 .contract-mark svg { display: block; }
+
+/* The workspace (network, modifier, Safe) lives in one place: the Roles config card, with its own switch. */
+.editor-page .topbar { grid-template-columns: auto minmax(0, 1fr); }
+.editor-page .top-actions { justify-self: end; }
+.card-switch { position: relative; z-index: 2; width: 100%; margin-top: 2px; padding: 8px 12px; border: 1px solid var(--rule-strong); border-radius: 8px; background: var(--paper); color: var(--ink-2); font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+.card-switch:hover, .card-switch:focus-visible { border-color: var(--blue); color: var(--blue); }
+
+/* The role's destructive action sits on the top line, away from the form fields. */
+.role-topline { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.role-topline .breadcrumbs { margin: 0; }
+
+/* Role fields share one left edge; the old borderless inputs used negative margins. */
+.editor-page .title-input, .editor-page .description-input { margin-left: 0; margin-right: 0; }
+.panel-heading .button { white-space: nowrap; flex: none; }
+
+/* Allowance: Remove is a labelled action in the card's top row, not an icon that reads like "clear this field". */
+.allowance-head .remove-permission { align-self: flex-start; flex: none; margin-top: 2px; }
+.avatar svg { display: block; }

@@ -29,7 +29,7 @@ import { ContractName } from "./components/contract-name";
 import { PermissionConditions } from "./components/permission-conditions";
 import { isBlankPermission } from "./lib/policy-codec";
 import { AddressLabel, AddressText } from "./components/address-link";
-import { ContractIcon } from "./components/contract-icon";
+import { ContractIcon, MemberIcon } from "./components/contract-icon";
 import { baselineRoleFor, permissionChange, roleChanged, summarizeChanges } from "./lib/draft-changes";
 import { UNWRAP_TARGETS } from "./lib/unwrappers";
 import { useUnwrapperStates } from "./lib/use-unwrappers";
@@ -107,7 +107,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const unwrapperStates = useUnwrapperStates(policy.scope?.chainId ?? null, policy.scope?.rolesMod ?? null);
   // The draft right after a removal, so Undo is offered only until the next edit.
-  const [undo, setUndo] = useState<{ label: string; before: DraftPolicy; after: DraftPolicy } | null>(null);
+  const [undo, setUndo] = useState<{ label: string; message?: string; before: DraftPolicy; after: DraftPolicy | null } | null>(null);
   const [showScope, setShowScope] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [showDrafts, setShowDrafts] = useState(false);
@@ -269,6 +269,12 @@ export default function Home() {
     policy.setDraft(() => after);
     setUndo({ label, before, after });
   };
+  /** Throws away unsaved edits, but keeps them recoverable with Undo until the next edit. */
+  const discardWithUndo = () => {
+    const before = draft;
+    policy.discard();
+    setUndo({ label: "", message: "Discarded your unsaved edits.", before, after: null });
+  };
   const removePermissionFromList = (roleId: string, permissionId: string, label: string) => {
     removeWithUndo(`permission ${label}`, (current) => ({
       ...current,
@@ -296,7 +302,6 @@ export default function Home() {
   return <main className="app-shell editor-page">
     <header className="topbar">
       <a className="brand" href="/" aria-label="SafeRoles home"><span className="brand-mark" aria-hidden="true">SR</span><span>SafeRoles</span></a>
-      <button className="workspace-switcher" onClick={()=>setShowScope(true)}><span className="network-dot" aria-hidden="true"/><span><b>{chainName(policy.scope.chainId)}</b><small>Modifier · {shortHex(policy.scope.rolesMod)}</small></span><span aria-hidden="true">⌄</span></button>
       <div className="top-actions"><ApiKeySettings/>
         {safe.mode==="safe-app" && safe.info ? <span className="wallet-chip" title={safe.info.safeAddress}><span className="wallet-status-dot"/><AddressText chainId={policy.scope.chainId} address={safe.info.safeAddress}/><small>Safe App · {safe.info.threshold}/{safe.info.owners.length}</small></span>:<WalletControl wallet={wallet}/>}
         <button className="button ghost" onClick={()=>setShowDrafts(true)}>Drafts{drafts.drafts.length?` (${drafts.drafts.length})`:""}</button>
@@ -369,7 +374,7 @@ export default function Home() {
             Discard to see the indexed policy.
           </span>
           <span className="banner-actions">
-            <button className="button ghost" onClick={policy.discard}>Discard</button>
+            <button className="button ghost" onClick={discardWithUndo}>Discard</button>
             <button className="button ghost" onClick={policy.dismissRecovered}>Dismiss</button>
           </span>
         </div>
@@ -503,6 +508,7 @@ export default function Home() {
             chainId={policy.scope.chainId}
             active={configOpen}
             onOpen={() => { setSelectedPermissionId(null); setTab("Contracts"); focusWorkspace(); }}
+            onSwitch={() => setShowScope(true)}
           />
         </aside>
 
@@ -609,7 +615,7 @@ export default function Home() {
                             <b>{target.label}</b>
                             <span className={`health-badge ${state?.status === "enabled" ? "" : state?.status === "legacy" ? "warn" : "neutral"}`}>{statusLabel}</span>
                             <p>{target.explanation}</p>
-                            {state?.contract && <code title={state.contract}>{state.contract}</code>}
+                            {state?.contract && <AddressText chainId={policy.scope!.chainId} address={state.contract} full />}
                             {state?.status === "legacy" && <small className="field-help">An older adapter is set for this contract. Enabling replaces it with the current official one.</small>}
                           </div>
                           {canEnable && (
@@ -645,9 +651,23 @@ export default function Home() {
             </>
           ) : selectedRole ? (
             <>
-              <div className="breadcrumbs">
-                {chainName(policy.scope.chainId)} <span>/</span>{" "}
-                {policy.facts ? <AddressText chainId={policy.scope.chainId} address={policy.facts.avatar} /> : "Safe"} <span>/</span> Roles
+              <div className="role-topline">
+                <div className="breadcrumbs">
+                  {chainName(policy.scope.chainId)} <span>/</span>{" "}
+                  {policy.facts ? <AddressText chainId={policy.scope.chainId} address={policy.facts.avatar} /> : "Safe"} <span>/</span> Roles
+                </div>
+                <button
+                  type="button"
+                  className="remove-permission remove-role"
+                  title={selectedRole.deployedKey ? "Revokes all of this role's permissions and members on chain once submitted. You can undo until your next edit." : "Removes this unsaved role"}
+                  onClick={() => {
+                    removeWithUndo(`role ${selectedRole.name || selectedRole.key}`, (current) => ({ ...current, roles: current.roles.filter((entry) => entry.id !== selectedRole.id) }));
+                    setSelectedRoleId(null);
+                    setSelectedPermissionId(null);
+                  }}
+                >
+                  Remove role
+                </button>
               </div>
               <header className="role-header">
                 <div>
@@ -702,17 +722,6 @@ export default function Home() {
                     </small>
                   </label>
                 </div>
-                <button
-                  className="delete-link"
-                  title={selectedRole.deployedKey ? "Revokes all of this role's permissions and members on chain once submitted. You can undo until your next edit." : "Removes this unsaved role"}
-                  onClick={() => {
-                    removeWithUndo(`role ${selectedRole.name || selectedRole.key}`, (current) => ({ ...current, roles: current.roles.filter((entry) => entry.id !== selectedRole.id) }));
-                    setSelectedRoleId(null);
-                    setSelectedPermissionId(null);
-                  }}
-                >
-                  Remove role
-                </button>
               </header>
 
               <nav className="tabs" aria-label="Role sections">
@@ -896,7 +905,7 @@ export default function Home() {
                     {selectedRole.members.map((member) => (
                       <div className="member-row" key={member.id}>
                         <span className="member-name">
-                          <span className="avatar">{initials(member.label ?? member.address.slice(2, 4))}</span>
+                          <span className="avatar" aria-hidden="true"><MemberIcon /></span>
                           <input
                             className="member-label-input"
                             aria-label={`Label for ${shortHex(member.address)}`}
@@ -946,9 +955,9 @@ export default function Home() {
         </section>
       </div>
 
-      {undo && draft === undo.after && (
+      {undo && (undo.after === null ? !policy.dirty : draft === undo.after) && (
         <div className="undo-toast" role="status">
-          <span>Removed {undo.label}.</span>
+          <span>{undo.message ?? `Removed ${undo.label}.`}</span>
           <button onClick={() => { policy.setDraft(() => undo.before); setUndo(null); }}>Undo</button>
           <button aria-label="Dismiss" onClick={() => setUndo(null)}>×</button>
         </div>
@@ -1002,7 +1011,7 @@ export default function Home() {
                 Autosaved locally
               </span>
             )}
-            <button onClick={policy.discard} disabled={!policy.dirty}>
+            <button onClick={discardWithUndo} disabled={!policy.dirty}>
               Discard edits
             </button>
             {drafts.available && (

@@ -4,14 +4,15 @@ import { chainName } from "../lib/chains";
 import { normalizeContractAddress, type LocalContract } from "../lib/contract-labels";
 import { useLocalContracts } from "../lib/use-local-contracts";
 import { useContractLabel } from "../lib/use-contract-label";
-import { ContractName } from "./contract-name";
+import { useContractName } from "../lib/use-contract-name";
 
 function ContractRow({ contract, onRemove, busy }: { contract: LocalContract; onRemove: () => void; busy: boolean }) {
   const [editing, setEditing] = useState(false);
   const label = useContractLabel(contract.chainId, contract.address);
+  const known = useContractName(contract.chainId, contract.address, contract.label);
   return <article className="local-contract-row">
     <div className="local-contract-copy">
-      <b><ContractName chainId={contract.chainId} address={contract.address} label={contract.label}/></b>
+      {known.name && <b>{known.name}</b>}
       <AddressText chainId={contract.chainId} address={contract.address} full/>
       {editing && <label className="modal-field"><span>Custom label</span><input aria-label={`Label for ${contract.address}`} value={label.value ?? contract.label} maxLength={256} placeholder="Leave empty to use the token symbol or contract name" onChange={(event) => label.save(event.target.value)}/><small>{label.error || (label.saving ? "Saving locally…" : "Saved locally. An empty label uses the automatic name.")}</small></label>}
     </div>
