@@ -1,10 +1,11 @@
 /** External reads happen in the browser. No same-origin API routes or server keys. */
-import { createRolesReader } from "./roles-reader";
+import { createChainRolesReader, createIndexerReader, createPreferredRolesReader } from "./roles-reader";
+import { browserLogCache, chainLogAccess } from "./chain-access";
 import { parseManualAbi, resolveAbi, type ResolvedAbi } from "./abi-source";
 import { localRead, localUpdate } from "./local-db";
 import { getApiKey } from "./api-keys";
 import { parseAddress, parseChainId } from "./serialize";
-export const browserRolesReader=createRolesReader();
+export const browserRolesReader=createPreferredRolesReader({indexer:createIndexerReader(),chain:createChainRolesReader({access:chainLogAccess,cache:browserLogCache})});
 function abiId(chainId:number,address:string){return `${parseChainId(chainId)}:${parseAddress(address,"address").toLowerCase()}`;}
 export async function readBrowserAbi(chainId:number,address:string,signal?:AbortSignal):Promise<ResolvedAbi|null>{
   const id=abiId(chainId,address);

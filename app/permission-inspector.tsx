@@ -13,6 +13,7 @@ import { FunctionPicker } from "./components/function-picker";
 import type { ResolvedAbi } from "./lib/abi-source";
 import { conditionOperatorHelp, conditionOperatorLabels, conditionOperators, isValuelessOperator, type ConditionOperator, type DraftAllowance, type DraftPermission } from "./lib/policy";
 import { adoptSignature } from "./lib/policy-codec";
+import { legacyEncoding, reencodePermission } from "./lib/policy-safety";
 import { draftPermissionRisk, riskReason } from "./lib/policy-plan";
 const nextId = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 
@@ -404,7 +405,26 @@ export function PermissionInspector({
             )}
           </div>
 
-          {permission.rawCondition ? (
+          {permission.rawCondition && legacyEncoding(permission).found ? (
+            <div className="guardrail-callout critical">
+              <b>Needs to be applied again</b>
+              <p>
+                This condition was stored by a Roles SDK older than 4.1.5, which encoded fixed-size
+                array parameters (such as uint256[2]) differently.{" "}
+                {legacyEncoding(permission).fixable
+                  ? "Re-encode it to apply the same condition with the current encoding; the change is then part of your next submission."
+                  : "It constrains inside such an array, which this editor cannot rebuild exactly. Rewrite it in the Zodiac Roles app with SDK 4.1.5 or later and apply it again."}
+              </p>
+              {legacyEncoding(permission).fixable && (
+                <button
+                  className="button secondary"
+                  onClick={() => onChange((current) => reencodePermission(current) ?? current)}
+                >
+                  Re-encode with the current SDK
+                </button>
+              )}
+            </div>
+          ) : permission.rawCondition ? (
             <div className="guardrail-callout locked">
               <b>Deployed condition preserved</b>
               <p>

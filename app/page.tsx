@@ -119,7 +119,9 @@ export default function Home() {
   const [draftVersion, setDraftVersion] = useState<number | null>(null);
   const [staleBase, setStaleBase] = useState(false);
   const [baselineNotice, setBaselineNotice] = useState<
-    "changed" | "indexer-pending" | "submitted" | null
+    | { reason: "changed" | "submitted" }
+    | { reason: "pending" | "outcome-unknown"; until: number }
+    | null
   >(null);
 
   const { mods, loading: modsLoading, error: modsError } = useDiscoveredMods(
@@ -162,7 +164,7 @@ export default function Home() {
     return()=>clearTimeout(timer);
   },[openScope]);
 
-  // Recovered edits were saved against whatever snapshot was indexed then.
+  // Recovered edits were saved against whatever configuration was on chain then.
   // Say so explicitly rather than letting the rebuilt diff look fresh.
   const recoveredCopy = policy.recovered;
   const recoveredStale = Boolean(
@@ -200,7 +202,6 @@ export default function Home() {
   const blockingIssues = plan.issues;
   const canSubmit =
     submitVia !== "none" &&
-    !policy.unindexed &&
     verification.ok &&
     !(submitVia === "safe-app" && safe.info?.isReadOnly) &&
     blockingIssues.length === 0 &&
@@ -223,7 +224,9 @@ export default function Home() {
           verification={verification}
           canSubmit={canSubmit}
           recheckBaseline={policy.recheckBaseline}
+          beginSubmission={policy.beginSubmission}
           markSubmitted={policy.markSubmitted}
+          clearSubmission={policy.clearSubmission}
           onClose={() => setShowReview(false)}
           onFixIssue={(issue) => {
             setShowReview(false);
@@ -231,11 +234,11 @@ export default function Home() {
             if (issue.roleId) setSelectedRoleId(issue.roleId);
             setSelectedPermissionId(issue.permissionId ?? null);
           }}
-          onBaselineChanged={(reason) => {
+          onBaselineChanged={(check) => {
             setShowReview(false);
-            setBaselineNotice(reason);
+            setBaselineNotice(check.reason === "changed" ? { reason: "changed" } : { reason: check.reason, until: check.until });
           }}
-          onSubmitted={() => setBaselineNotice("submitted")}
+          onSubmitted={() => setBaselineNotice({ reason: "submitted" })}
         /></Suspense>;
 
   if(showScope && policy.scope) return <ScopePicker safe={safe} wallet={wallet} mods={mods} modsLoading={modsLoading} modsError={modsError}
@@ -260,7 +263,7 @@ export default function Home() {
 
   if(policy.status==="loading" || policy.status==="idle") return <main className="app-shell boot"><div className="boot-card"><span className="brand-mark" aria-hidden="true">SR</span><h1>Reading policy</h1><p>{shortHex(policy.scope.rolesMod)} on {chainName(policy.scope.chainId)}</p></div></main>;
 
-  if(policy.status==="error" || !draft) return <main className="app-shell boot"><div className="boot-card error"><h1>Could not read the policy</h1><p>{policy.error}</p><div className="boot-actions"><button className="button secondary" onClick={()=>void policy.reload()}>Try again</button><button className="button ghost" onClick={()=>setShowScope(true)}>Choose a different modifier</button></div></div></main>;
+  if(policy.status==="error" || !draft) return <main className="app-shell boot"><div className="boot-card error"><h1>Could not read the policy</h1><p>{policy.error}</p><div className="boot-actions"><button className="button secondary" onClick={()=>void policy.reload()}>Try again</button><ApiKeySettings/><button className="button ghost" onClick={()=>setShowScope(true)}>Choose a different modifier</button></div></div></main>;
 
   /** Removes something from the draft and offers Undo until the next edit. */
   const removeWithUndo = (label: string, transform: (current: DraftPolicy) => DraftPolicy, target?: { address: string; name: string; fn: string }) => {
@@ -330,7 +333,7 @@ export default function Home() {
           <p>
             Once the Safe transaction is executed, the modifier will be live at{" "}
             <code>{deployedModifier}</code>, with its first role configured.
-            Submission is not execution; check the Safe queue before opening the indexed policy.
+            Submission is not execution; check the Safe queue before opening its policy.
           </p>
           <div className="picker-actions">
             <button
@@ -351,17 +354,62 @@ export default function Home() {
         </div>
       )}
 
-      {policy.unindexed && (
-        <div className="banner danger" role="alert">
-          <b>This modifier is not indexed yet</b>
+      {policy.mastercopy && policy.mastercopy.status !== "current" && (
+        <div className={`banner ${policy.mastercopy.status === "affected" ? "danger" : "warning"}`} role="alert">
+          <b>
+            {policy.mastercopy.status === "affected"
+              ? "This modifier runs Roles 2.1.0"
+              : "This modifier does not run the official Roles 2.1.1 contract"}
+          </b>
           <p>
-            It is deployed and enabled on your Safe, but the Roles indexer has not
-            picked it up, so existing roles cannot be shown and changes cannot be
-            submitted. Check again in a few minutes.
+            {policy.mastercopy.status === "affected" ? (
+              <>
+                Its contract is the release covered by Zodiac&apos;s{" "}
+                <a href="https://docs.zodiac.eco/developers/security" target="_blank" rel="noreferrer">June 2026 security notice</a>.
+                A deployed modifier cannot be upgraded: set up a new modifier on Roles 2.1.1 and move the
+                roles to it, then disable this one on the Safe.
+              </>
+            ) : policy.mastercopy.implementation ? (
+              <>It delegates to <AddressText chainId={policy.scope!.chainId} address={policy.mastercopy.implementation} />, not the official Roles 2.1.1 mastercopy. Check that code before relying on this modifier.</>
+            ) : (
+              "Its code is not a standard proxy of the official Roles 2.1.1 mastercopy. Check that code before relying on this modifier."
+            )}
           </p>
-          <div className="banner-actions">
-            <button className="button secondary" onClick={() => void policy.reload()}>Check again</button>
-          </div>
+        </div>
+      )}
+
+      {policy.standingWarnings.length > 0 && (
+        <div className="banner danger" role="alert">
+          <b>Permissions on chain that need fixing</b>
+          <ul>
+            {policy.standingWarnings.map((warning) => <li key={warning}>{warning}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {policy.legacyPermissions.length > 0 && (
+        <div className="banner danger" role="alert">
+          <b>
+            {policy.legacyPermissions.length === 1 ? "A permission needs" : `${policy.legacyPermissions.length} permissions need`} to be applied again
+          </b>
+          <p>
+            Their conditions were stored by a Roles SDK older than 4.1.5, which encoded fixed-size array
+            parameters (such as uint256[2]) differently. Re-encode them with the current SDK, then submit.
+          </p>
+          <span className="banner-actions">
+            <button
+              className="button secondary"
+              onClick={() => {
+                const [first] = policy.legacyPermissions;
+                if (!first) return;
+                setTab("Permissions");
+                setSelectedRoleId(first.roleId);
+                setSelectedPermissionId(first.permissionId);
+              }}
+            >
+              Show {policy.legacyPermissions.length === 1 ? "it" : "the first one"}
+            </button>
+          </span>
         </div>
       )}
 
@@ -370,9 +418,9 @@ export default function Home() {
           <b>Restored unsaved edits</b>
           <span>
             Your unsaved edits from {new Date(policy.recovered.savedAt).toLocaleString()} are shown, not the
-            indexed policy
+            on-chain policy
             {policy.baseline && policy.draft ? ` — ${summarizeChanges(policy.baseline, policy.draft).join(", ") || "no differences"}` : ""}.
-            Discard to see the indexed policy.
+            Discard to see the on-chain policy.
           </span>
           <span className="banner-actions">
             <button className="button ghost" onClick={discardWithUndo}>Discard</button>
@@ -386,7 +434,7 @@ export default function Home() {
           <b>This draft was based on an older configuration</b>
           <p>
             The modifier has changed since the draft was saved — another proposal has
-            likely executed since. The diff is computed against the current indexed snapshot,
+            likely executed since. The diff is computed against the current on-chain configuration,
             so re-check it before submitting.
           </p>
         </div>
@@ -395,31 +443,50 @@ export default function Home() {
       {baselineNotice && (
         <div
           className={`banner ${
-            baselineNotice === "submitted" ? "info" : "danger"
+            baselineNotice.reason === "submitted" ? "info" : "danger"
           }`}
           role="status"
         >
           <b>
-            {baselineNotice === "changed"
-              ? "Indexed policy changed — review rebuilt"
-              : baselineNotice === "indexer-pending"
-                ? "Waiting for the policy indexer"
-                : "Submission accepted — waiting for indexed state"}
+            {baselineNotice.reason === "changed"
+              ? "On-chain policy changed — review rebuilt"
+              : baselineNotice.reason === "pending"
+                ? "Waiting for an earlier submission"
+                : baselineNotice.reason === "outcome-unknown"
+                  ? "An earlier submission may have gone out"
+                  : "Submission accepted — waiting for it to take effect"}
           </b>
           <p>
-            {baselineNotice === "changed"
-              ? "The indexed baseline changed after this review opened. No transaction was submitted. The diff now uses the newer snapshot; open review again and inspect the rebuilt calls."
-              : "Another proposal was already submitted from this baseline. New submissions from this baseline are blocked until the indexer observes the resulting policy, so calls that already went out are not sent again. This holds across reloads and ends on its own after 15 minutes."}
+            {baselineNotice.reason === "changed"
+              ? "The on-chain configuration changed after this review opened. No transaction was submitted. The diff now uses the newer state; open review again and inspect the rebuilt calls."
+              : baselineNotice.reason === "pending"
+                ? `An earlier submission from this browser has not taken effect on chain yet — it may still need signatures, execution or mining. Submitting now could send its calls a second time, so this is blocked until they are on chain, or until ${new Date(baselineNotice.until).toLocaleString()}.`
+                : baselineNotice.reason === "outcome-unknown"
+                  ? `A submission from this browser was interrupted before it finished, so some of its calls may already be on chain or in the Safe queue. Check your wallet and Safe. Submitting is blocked until those calls are on chain, or until ${new Date(baselineNotice.until).toLocaleString()}.`
+                  : "Until the calls are on chain, a submission that would send them again is blocked, in every tab and after a reload."}
           </p>
-          <button
-            className="button secondary"
-            onClick={() => {
-              setBaselineNotice(null);
-              void policy.reload();
-            }}
-          >
-            Refresh indexed state
-          </button>
+          <span className="banner-actions">
+            {baselineNotice.reason === "outcome-unknown" && (
+              <button
+                className="button secondary"
+                onClick={() => {
+                  setBaselineNotice(null);
+                  void policy.clearSubmission("interrupted");
+                }}
+              >
+                Nothing was sent — allow submitting
+              </button>
+            )}
+            <button
+              className="button secondary"
+              onClick={() => {
+                setBaselineNotice(null);
+                void policy.reload();
+              }}
+            >
+              Read the chain again
+            </button>
+          </span>
         </div>
       )}
 
@@ -438,7 +505,7 @@ export default function Home() {
         <aside className="role-sidebar">
           <div className="sidebar-heading">
             <div>
-              <span className="eyebrow">{plan.changes.length > 0 ? `Draft · ${plan.changes.length} unsaved change${plan.changes.length === 1 ? "" : "s"}` : "Indexed policy"}</span>
+              <span className="eyebrow">{plan.changes.length > 0 ? `Draft · ${plan.changes.length} unsaved change${plan.changes.length === 1 ? "" : "s"}` : "On-chain policy"}</span>
               <h1>Roles</h1>
             </div>
             <button
@@ -1059,7 +1126,7 @@ export default function Home() {
             setDraftId(summary.id);
             setDraftVersion(opened.version);
             // A draft saved against a different baseline still shows a diff, but
-            // against today's indexed snapshot — say so rather than imply it is fresh.
+            // against today's on-chain configuration — say so rather than imply it is fresh.
             setStaleBase(
               Boolean(
                 opened.baseStateHash &&
