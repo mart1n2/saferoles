@@ -2743,10 +2743,22 @@ button:disabled, .button:disabled { cursor: not-allowed; opacity: .45; }
   .editor-page > .workspace-notices { flex: 0 1 auto; max-height: 30dvh; overflow-y: auto; overscroll-behavior: contain; }
   .editor-page > .workspace-notices:empty { display: none; }
   .editor-page > .workspace { flex: 1 1 0; min-height: 0; overflow: hidden; }
-  .editor-page .role-sidebar { position: static; top: auto; height: 100%; min-height: 0; overflow: hidden; padding: 20px 16px; }
+  /* On a short window the sidebar scrolls as a whole rather than cutting the role list off. */
+  .editor-page .role-sidebar { position: static; top: auto; height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 16px; }
   .editor-page .sidebar-heading, .editor-page .search, .editor-page .role-create-inline { flex-shrink: 0; }
-  .editor-page .role-list { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-  .editor-page .modifier-navigation { position: static; width: auto; flex-shrink: 0; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--rule); }
+  /* Never shorter than one role card, so a single role never needs scrolling. */
+  .editor-page .role-list { flex: 1 1 auto; min-height: 96px; overflow-y: auto; overscroll-behavior: contain; }
+  .editor-page .modifier-navigation { position: static; width: auto; flex-shrink: 0; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rule); }
+  /* The pinned profile card stays compact so the role list keeps the room. */
+  .editor-page .modifier-card { gap: 10px; padding: 12px 14px; }
+  .editor-page .modifier-card-heading { grid-template-columns: 28px minmax(0, 1fr) auto; gap: 8px; }
+  .editor-page .modifier-card-heading .role-glyph { width: 28px; height: 28px; }
+  .editor-page .modifier-card-heading > span:nth-child(2) { gap: 0; }
+  .editor-page .modifier-card-heading b { font-size: 15px; }
+  .editor-page .modifier-card-heading small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; line-height: 1.4; }
+  .editor-page .modifier-card-identity { gap: 4px; padding-top: 8px; }
+  .editor-page .modifier-card-identity > span { line-height: 1.4; }
+  .editor-page .card-switch { margin-top: 0; padding: 6px 10px; }
   .editor-page .role-workspace { height: 100%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding-bottom: 40px; }
   .editor-page:has(.change-bar) .role-workspace { padding-bottom: 132px; }
 }
