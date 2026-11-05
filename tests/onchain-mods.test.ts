@@ -16,11 +16,3 @@ test("merging keeps indexed rows and adds chain-only modules once",()=>{
   const a={address:roles,chainId:1},b={address:other,chainId:1};
   assert.deepEqual(mergeMods([a],[{...a,address:roles.toUpperCase().replace("0X","0x")},b]),[a,b]);
 });
-import { readUnindexedModifier } from "../app/lib/onchain-mods";
-test("an unindexed modifier needs an on-chain answer and an enabling Safe",async()=>{
-  const ok:ModuleReader={...reader,enabled:async()=>true};
-  const mod=await readUnindexedModifier(roles,1,ok);
-  assert.equal(mod?.avatar.toLowerCase(),safe);assert.deepEqual(mod?.roles,[]);
-  assert.equal(await readUnindexedModifier(roles,1,{...ok,enabled:async()=>false}),null);
-  assert.equal(await readUnindexedModifier(other,1,ok),null);
-});

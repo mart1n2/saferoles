@@ -354,9 +354,9 @@ function SetupForm({
     setExecution({ checking: true, message: null });
     try {
       await verifyInitialization({ safeAddress, modifierAddress: plan.predictedAddress, getCode: submitter.getCode, readContract: submitter.readContract });
-      // The editor needs the full indexed policy; do not invent a post-execution baseline.
-      const mod = await browserRolesReader.read({chainId,address:plan.predictedAddress},{cache:"no-store"});
-      if (!mod) throw new Error("Deployment is verified on chain. The policy indexer is still catching up; check again shortly.");
+      // The editor needs the configuration as the chain has it; do not invent a post-execution baseline.
+      const mod = await browserRolesReader.read({chainId,address:plan.predictedAddress});
+      if (!mod) throw new Error("Deployment is verified, but its configuration could not be read from the chain yet; check again shortly.");
       if (mounted.current) onOpen(plan.predictedAddress);
     } catch (error) {
       if (!mounted.current) return;
@@ -719,7 +719,7 @@ function SetupForm({
             <small>
               Submitted does not mean executed. Once the Safe executes this batch,
               the modifier and first role will be live at {plan?.predictedAddress}.
-              Wait for execution before opening its indexed policy.
+              Wait for execution before opening its policy.
             </small>
             <button className="button secondary" disabled={execution.checking || !submitter || submitter.chainId !== chainId} onClick={() => void checkExecution()}>
               {execution.checking ? "Checking execution…" : "Check execution and open roles"}

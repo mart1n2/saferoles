@@ -32,9 +32,9 @@ export const formKeys = {
     `policy:${chainId}:${rolesMod.toLowerCase()}`,
   setup: (chainId: number, safeAddress: string) =>
     `setup:${chainId}:${safeAddress.toLowerCase()}`,
-  /** Remembers that a proposal was sent from a given indexed baseline, across reloads. */
-  submitted: (chainId: number, rolesMod: string) =>
-    `submitted:${chainId}:${rolesMod.toLowerCase()}`,
+  /** One submission whose calls may not be indexed yet (see submission-mark.ts). */
+  submitted: (chainId: number, rolesMod: string, id: string) =>
+    `submitted:${chainId}:${rolesMod.toLowerCase()}:${id}`,
   scopeLookup: () => "scope-lookup",
   scopeModifier: () => "scope-modifier",
 };
@@ -64,12 +64,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function record(value: unknown, path: string): Record<string, unknown> {
+export function record(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) throw new Error(`${path} must be an object.`);
   return value;
 }
 
-function allowedKeys(value: Record<string, unknown>, allowed: string[], path: string) {
+export function allowedKeys(value: Record<string, unknown>, allowed: string[], path: string) {
   const names = new Set(allowed);
   const extra = Object.keys(value).find((name) => !names.has(name));
   if (extra) throw new Error(`${path}.${extra} is not a supported field.`);
@@ -89,7 +89,7 @@ function integer(value: unknown, path: string): number {
   return value as number;
 }
 
-function baseHash(value: unknown): string | null {
+export function baseHash(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string" || !/^[0-9a-f]{64}$/i.test(value)) {
     throw new Error("baseHash must be a SHA-256 hex digest.");
@@ -262,48 +262,4 @@ export function isRecoveredPolicyStale(
   return Boolean(
     restored.baseHash && currentBaseHash && restored.baseHash !== currentBaseHash,
   );
-}
-
-/**
- * How long a submission blocks a second one built on the same indexed baseline.
- * The indexer normally catches up well within this; a proposal still waiting for
- * signatures would otherwise block new work for as long as it stays pending.
- */
-export const SUBMISSION_BLOCK_MS = 15 * 60 * 1000;
-
-export type SubmissionMark = { baseHash: string; savedAt: number };
-
-/**
- * True while the indexer still shows the baseline a submission was built on, within
- * the block window. Once the indexed state differs, the submission has been seen
- * and the next diff is built on new state, so nothing is blocked.
- */
-export function submissionBlocks(
-  mark: SubmissionMark | null,
-  currentHash: string,
-  now: number = Date.now(),
-): boolean {
-  return Boolean(mark && mark.baseHash === currentHash && now - mark.savedAt >= 0 && now - mark.savedAt < SUBMISSION_BLOCK_MS);
-}
-
-export async function rememberSubmission(chainId: number, rolesMod: string, baseHash: string): Promise<void> {
-  try {
-    await writeSavedForm(formKeys.submitted(chainId, rolesMod), { baseHash });
-  } catch {
-    // Without storage the in-memory guard still applies for this page session.
-  }
-}
-
-export async function readSubmissionMark(chainId: number, rolesMod: string): Promise<SubmissionMark | null> {
-  const saved = await readSavedForm<{ baseHash: string }>(formKeys.submitted(chainId, rolesMod), (value) => {
-    if (!value || typeof value !== "object" || typeof (value as { baseHash?: unknown }).baseHash !== "string") {
-      throw new Error("Malformed submission mark.");
-    }
-    return { baseHash: (value as { baseHash: string }).baseHash };
-  });
-  return saved ? { baseHash: saved.data.baseHash, savedAt: saved.savedAt } : null;
-}
-
-export async function clearSubmissionMark(chainId: number, rolesMod: string): Promise<void> {
-  await clearSavedForm(formKeys.submitted(chainId, rolesMod));
 }

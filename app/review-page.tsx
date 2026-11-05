@@ -10,7 +10,7 @@ import type { DraftPermission } from "./lib/policy";
 import { TextWithAddresses } from "./components/address-link";
 import { safeTransactionUrl } from "./lib/chains";
 import type { DraftPolicy, PolicyIssue } from "./lib/policy";
-import type { ChainFacts, Scope, usePolicy } from "./lib/use-policy";
+import type { BaselineCheck, ChainFacts, Scope, usePolicy } from "./lib/use-policy";
 import { verifyModifier, type useSafe } from "./lib/use-safe";
 import {
   PartialSubmissionError,
@@ -35,7 +35,9 @@ export function ReviewPage({
   verification,
   canSubmit,
   recheckBaseline,
+  beginSubmission,
   markSubmitted,
+  clearSubmission,
   onClose,
   onFixIssue,
   onBaselineChanged,
@@ -52,11 +54,13 @@ export function ReviewPage({
   verification: { ok: boolean; problems: string[] };
   canSubmit: boolean;
   recheckBaseline: ReturnType<typeof usePolicy>["recheckBaseline"];
+  beginSubmission: ReturnType<typeof usePolicy>["beginSubmission"];
   markSubmitted: ReturnType<typeof usePolicy>["markSubmitted"];
+  clearSubmission: ReturnType<typeof usePolicy>["clearSubmission"];
   onClose: () => void;
   /** Jumps back to the role/permission a blocking issue belongs to. */
   onFixIssue?: (issue: PolicyIssue) => void;
-  onBaselineChanged: (reason: "changed" | "indexer-pending") => void;
+  onBaselineChanged: (check: Extract<BaselineCheck, { fresh: false }>) => void;
   onSubmitted: () => void;
 }) {
   const targets = [...new Set(plan.changes.flatMap((change) => {
@@ -104,7 +108,7 @@ export function ReviewPage({
     try {
       const baseline = await recheckBaseline();
       if (!baseline.fresh) {
-        onBaselineChanged(baseline.reason);
+        onBaselineChanged(baseline);
         return;
       }
 
@@ -154,14 +158,26 @@ export function ReviewPage({
         value: transaction.value,
         data: transaction.data,
       }));
-      const result =
-        submitVia === "wallet"
-          ? await wallet.send(payload)
-          : await safe.propose(payload);
+      // Recorded before the first signing prompt: if the page closes partway
+      // through a sequential send, a reload must still know these calls may
+      // have gone out.
+      await beginSubmission(payload);
+      let result: SubmissionResult;
+      try {
+        result =
+          submitVia === "wallet"
+            ? await wallet.send(payload)
+            : await safe.propose(payload);
+      } catch (caught) {
+        if (caught instanceof PartialSubmissionError) markSubmitted(caught.submission);
+        // Rejected before anything was broadcast or proposed.
+        else await clearSubmission("current");
+        throw caught;
+      }
 
       setSubmission(result);
       setState("done");
-      markSubmitted();
+      markSubmitted(result);
 
       // Recording is best-effort because the external submission has already
       // happened, but a non-2xx response is surfaced rather than silently
@@ -181,7 +197,6 @@ export function ReviewPage({
         setSubmission(caught.submission);
         setState("partial");
         setMessage(caught.message);
-        markSubmitted();
         return;
       }
       setState("error");
@@ -241,7 +256,7 @@ export function ReviewPage({
             <span className="eyebrow">Pre-flight review</span>
             <h1 id="review-title">Review your changes</h1>
             <p>
-              Diffed against the modifier&apos;s indexed snapshot. The
+              Diffed against the modifier&apos;s on-chain configuration. The
               baseline and Safe authorization are checked again immediately
               before submission.
             </p>
@@ -358,7 +373,7 @@ export function ReviewPage({
             ))}
             {plan.changes.length === 0 && (
               <p className="inline-empty">
-                The draft matches the indexed snapshot. Nothing to propose.
+                The draft matches the on-chain configuration. Nothing to propose.
               </p>
             )}
           </div>
@@ -495,7 +510,7 @@ export function ReviewPage({
             }
           >
             {state === "checking"
-              ? "Checking indexed state…"
+              ? "Reading the chain…"
               : state === "submitting"
                 ? "Submitting…"
                 : state === "done"

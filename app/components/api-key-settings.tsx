@@ -3,7 +3,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { apiServices, apiKeysRevision, serverApiKeysRevision, subscribeApiKeys, getApiKey, setSessionApiKey, rememberApiKey, unlockApiKey, forgetApiKey, lockApiKeys, savedApiKey, type ApiService } from "../lib/api-keys";
 import { useDismissOnEscape } from "../lib/use-dismiss-on-escape";
 const names:Record<ApiService,string>={safe:"Safe Infrastructure",etherscan:"Etherscan"};
-const purposes:Record<ApiService,string>={safe:"Optional. Reads Safe transaction status and queue details with your own rate limit.",etherscan:"Optional. Looks up contract ABIs so functions show names instead of hex selectors."};
+const purposes:Record<ApiService,string>={safe:"Optional. Reads Safe transaction status and queue details with your own rate limit.",etherscan:"Optional on most networks. Looks up contract ABIs so functions show names instead of hex selectors, and reads a modifier's history in a few requests. Needed on networks whose public RPC limits history reads, such as Arbitrum."};
 export function ApiKeySettings(){
   const [open,setOpen]=useState(false);
   return <><button className="button ghost" onClick={()=>setOpen(true)}>API keys</button>{open && <SettingsDialog onClose={()=>setOpen(false)}/>}</>;
@@ -14,7 +14,7 @@ function SettingsDialog({onClose}:{onClose:()=>void}){
   useDismissOnEscape(()=>{if(!busy)onClose();});
   return <ModalPortal><div className="modal-backdrop"><section className="modal connection-modal" role="dialog" aria-modal="true" aria-labelledby="api-keys-title">
     <div className="modal-heading"><div><span className="eyebrow">This browser only</span><h2 id="api-keys-title">API keys</h2></div><button className="icon-button" aria-label="Close API keys" disabled={busy} onClick={onClose}>×</button></div>
-    <p className="key-intro">Everything works without keys. Add one only if you hit rate limits. Keys go straight to the service, stay in memory unless you save them encrypted, and are never included in exports.</p>
+    <p className="key-intro">Most networks work without keys; an Etherscan key is needed where the public RPC limits history reads, such as Arbitrum. Otherwise add one only if you hit rate limits. Keys go straight to the service, stay in memory unless you save them encrypted, and are never included in exports.</p>
     {apiServices.map(service=><ApiKeyForm key={`${service}:${epoch}`} service={service} onBusy={setBusy} locked={busy}/>)}
     <button className="button secondary" disabled={busy} onClick={()=>{lockApiKeys();setEpoch(value=>value+1);}}>Lock all keys</button>
     <p className="inline-empty">Encryption protects saved data. Unlocked keys remain accessible to page scripts. Never enter a wallet private key or seed phrase. Forgetting your passphrase requires replacing the saved API key. Keys are excluded from draft exports.</p>

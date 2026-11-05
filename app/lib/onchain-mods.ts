@@ -1,14 +1,13 @@
 /**
  * Roles modifiers found by reading the Safe itself.
  *
- * The indexer lags behind the chain, so a modifier enabled a moment ago can be
- * missing from it. Enabled modules are read straight from the Safe and kept only
- * if they answer like a Roles modifier whose avatar is this Safe.
+ * Enabled modules are read straight from the Safe and kept only if they answer
+ * like a Roles modifier whose avatar is this Safe.
  */
 import { createPublicClient, getAddress, http, parseAbi } from "viem";
+import { APPROVED_ROLES_MASTERCOPY } from "./setup-roles";
 import { walletChains } from "./wallet-chains";
 import type { DiscoveredRolesMod } from "./roles-reader";
-import type { RolesModifier } from "zodiac-roles-sdk";
 
 const SENTINEL = "0x0000000000000000000000000000000000000001" as const;
 const safeAbi = parseAbi(["function isModuleEnabled(address module) view returns (bool)", "function getModulesPaginated(address start, uint256 pageSize) view returns (address[] array, address next)"]);
@@ -60,15 +59,27 @@ export function mergeMods<T extends { address: string; chainId: number }>(indexe
   return [...indexed, ...onChain.filter((mod) => !seen.has(`${mod.chainId}:${mod.address.toLowerCase()}`))];
 }
 
-/**
- * A modifier the indexer has not picked up yet.
- *
- * Only accepted when it answers like a Roles modifier and its Safe lists it as an
- * enabled module. Its roles cannot be read from the chain, so the returned
- * baseline is empty and callers must treat it as unindexed, never submit against it.
- */
-export async function readUnindexedModifier(address: string, chainId: number, reader: ModuleReader = createChainReader(chainId)): Promise<RolesModifier | null> {
-  const info = await reader.probe(address);
-  if (!info || !(await reader.enabled(info.avatar, address))) return null;
-  return { address: getAddress(address), owner: getAddress(info.owner), avatar: getAddress(info.avatar), target: getAddress(info.target), roles: [], allowances: [], multiSendAddresses: [] } as RolesModifier;
+/** Roles 2.1.0, the release the June 2026 security notice concerns; 2.1.1 is the pinned setup mastercopy. */
+export const ROLES_MASTERCOPY_AFFECTED = "0x9646fDAD06d3e24444381f44362a3B0eB343D337";
+
+export type MastercopyStatus = { status: "current" | "affected" | "unknown"; implementation: string | null };
+
+/** The implementation an EIP-1167 minimal proxy delegates to, or null for any other code. */
+export function proxyImplementation(code: string | undefined): string | null {
+  const match = /^0x363d3d373d3d3d363d73([0-9a-f]{40})5af43d82803e903d91602b57fd5bf3$/i.exec(code ?? "");
+  return match ? getAddress(`0x${match[1]}`) : null;
+}
+
+export function classifyMastercopy(implementation: string | null): MastercopyStatus {
+  const lower = implementation?.toLowerCase();
+  const status = lower === APPROVED_ROLES_MASTERCOPY.toLowerCase() ? "current" : lower === ROLES_MASTERCOPY_AFFECTED.toLowerCase() ? "affected" : "unknown";
+  return { status, implementation };
+}
+
+/** Which Roles release a modifier runs, read from its proxy code. */
+export async function readMastercopy(address: string, chainId: number): Promise<MastercopyStatus> {
+  const chain = walletChains.find((item) => item.id === chainId);
+  if (!chain) throw new Error("Unsupported chain.");
+  const client = createPublicClient({ chain, transport: http() });
+  return classifyMastercopy(proxyImplementation(await client.getBytecode({ address: getAddress(address) })));
 }

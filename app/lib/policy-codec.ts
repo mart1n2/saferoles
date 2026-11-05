@@ -639,9 +639,20 @@ export function adoptSignature(
  * Returns `null` — meaning "keep the raw tree" — for anything the flat model
  * cannot hold exactly.
  */
-function decodeFlatConditions(
+/** True when a condition subtree constrains nothing: every node is Pass. */
+export function isAllPass(condition: Condition): boolean {
+  return condition.operator === Operator.Pass && (condition.children ?? []).every(isAllPass);
+}
+
+export function decodeFlatConditions(
   condition: Condition,
   params: readonly ParamType[],
+  /**
+   * `passSubtrees`: treat a nested parameter that constrains nothing as
+   * unconstrained, for rebuilding a condition with the current encoder (which
+   * describes the structure from the signature again).
+   */
+  options: { passSubtrees?: boolean } = {},
 ): DraftCondition[] | null {
   if (
     condition.paramType !== ParameterType.Calldata ||
@@ -655,7 +666,10 @@ function decodeFlatConditions(
   const result: DraftCondition[] = [];
   for (const [index, child] of condition.children.entries()) {
     const param = params[index];
-    if (child.children && child.children.length > 0) return null;
+    if (child.children && child.children.length > 0) {
+      if (options.passSubtrees && isAllPass(child)) continue;
+      return null;
+    }
 
     switch (child.operator) {
       case Operator.Pass:

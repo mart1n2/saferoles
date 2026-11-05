@@ -50,13 +50,13 @@ export function ScopePicker({ safe, wallet, mods, modsLoading, modsError, onSele
         {supportedChainIds.map(id => <option value={id} key={id}>{chainOptionLabel(id)}</option>)}
       </select>{!hasOfficialRoles(chainId) && <small className="field-help">The official Roles contract is not deployed here. You can look up existing configurations, but not set up a new one.</small>}</label>
       <label className="modal-field"><span>Safe address</span><input className="mono-input" value={address} placeholder="0x…" onChange={event => setAddress(event.target.value.trim())} />
-        <small>Look up indexed Roles configurations by Safe address. Connecting a wallet is only needed to submit changes.</small>
+        <small>Look up the Roles modifiers enabled on a Safe. Connecting a wallet is only needed to submit changes.</small>
       </label>
       <button className="button primary" disabled={!isAddress(address)} onClick={() => { setLookup({ address, chainId }); setChooseAnother(false); }}>Find role configurations</button>
       {selected && <button className="button ghost" onClick={() => setChooseAnother(false)}>Back to selected Safe</button>}
     </div> : <>
       <div className="selected-safe"><b>{chainName(selected.chainId)}</b><code>{selected.address}</code>
-        <small>{canInitialize ? "Selected by your Safe host or verified Safe-aware wallet" : "Indexed lookup · submission authority has not been verified"}</small>
+        <small>{canInitialize ? "Selected by your Safe host or verified Safe-aware wallet" : "On-chain lookup · submission authority has not been verified"}</small>
       </div>
       {loading && <p className="inline-empty">Looking up role configurations…</p>}
       {error && <p className="error-text" role="alert">{error}</p>}
@@ -68,7 +68,7 @@ export function ScopePicker({ safe, wallet, mods, modsLoading, modsError, onSele
           <span className={`health-badge ${sameChain && governed ? "" : "warn"}`}>{sameChain && governed ? "Open roles" : "Inspect"}</span>
         </button>;
       })}</div>
-      {!loading && !error && shownMods.length === 0 && <div className="empty-state compact"><h3>No indexed role configurations</h3><p>This lookup does not prove that no module exists on chain. Initialize only if you intend to create a new Roles instance.</p></div>}
+      {!loading && !error && shownMods.length === 0 && <div className="empty-state compact"><h3>No Roles modifier found for this Safe</h3><p>Checked the modules enabled on the Safe on this network, and the official Roles indexer when it is reachable. Initialize only if you intend to create a new Roles instance.</p></div>}
       {selected && !hasOfficialRoles(selected.chainId)
         ? <p className="inline-empty">The official Roles contract is not deployed on {chainName(selected.chainId)}, so a new Roles instance cannot be set up here.</p>
         : selected && <div className="official-init">

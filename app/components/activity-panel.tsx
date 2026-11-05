@@ -43,7 +43,7 @@ export function ActivityPanel({ chainId, rolesMod, safe }: { chainId: number; ro
           <p>
             Stored only on this browser, per modifier. This is not
             cryptographic proof. Safe status is an infrastructure observation;
-            the indexed policy is refreshed separately after execution.
+            the on-chain policy is read again separately after execution.
           </p>
         </div>
       </div>

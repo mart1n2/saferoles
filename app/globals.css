@@ -1781,6 +1781,11 @@ select:focus-visible {
   border: 1px solid var(--red);
 }
 
+.banner.warning {
+  background: var(--amber-soft);
+  border: 1px solid var(--amber);
+}
+
 .banner-actions {
   display: flex;
   flex-wrap: wrap;

@@ -1,6 +1,6 @@
 
 /**
- * Policy state: load the indexer's configuration snapshot, edit a draft of it,
+ * Policy state: load the modifier's configuration from the chain, edit a draft of it,
  * and continuously
  * plan the difference.
  *
@@ -8,7 +8,8 @@
  * so what a reviewer reads and what gets signed are the same object. There is
  * no separate edit log.
  */
-import { discoverOnChain, mergeMods, readUnindexedModifier } from "./onchain-mods";
+import { discoverOnChain, mergeMods, readMastercopy, type MastercopyStatus } from "./onchain-mods";
+import { legacyEncoding, plannedCallIssues, standingWarnings } from "./policy-safety";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RolesModifier } from "zodiac-roles-sdk";
 import { fromRolesMod, isBlankPermission, lockDeployedRoleKeys, toSdkState, type SdkState } from "./policy-codec";
@@ -19,17 +20,25 @@ import { policyChanged } from "./draft-changes";
 import {
   clearSavedForm,
   formKeys,
-  clearSubmissionMark,
   isRecoveredPolicyChange,
   parsePolicyWorkingCopy,
-  readSubmissionMark,
-  rememberSubmission,
-  submissionBlocks,
-  SUBMISSION_BLOCK_MS,
   readSavedForm,
   writeSavedForm,
   type PolicyWorkingCopy,
 } from "./form-drafts";
+import {
+  blockedUntil,
+  clearSubmissionMark,
+  diffTransactions,
+  readSubmissionMarks,
+  rememberSubmission,
+  sentCount,
+  statusAfter,
+  submissionVerdict,
+  transactionDigests,
+  type SubmissionMark,
+} from "./submission-mark";
+import type { SubmissionResult } from "./submission";
 
 export type Scope = { chainId: number; rolesMod: string };
 
@@ -55,9 +64,21 @@ export type BaselineCheck =
   | { fresh: true; baseHash: string }
   | {
       fresh: false;
-      reason: "changed" | "indexer-pending";
+      reason: "changed";
       previousHash: string;
       currentHash: string;
+    }
+  | {
+      fresh: false;
+      /**
+       * An earlier submission's calls are not on chain yet. "outcome-unknown":
+       * it was interrupted, so they may or may not have gone out.
+       */
+      reason: "pending" | "outcome-unknown";
+      previousHash: string;
+      currentHash: string;
+      /** When the block lifts even if the calls never appear on chain. */
+      until: number;
     };
 
 function assertModifierAddress(mod: RolesModifier, expected: string): void {
@@ -108,23 +129,34 @@ export type PolicyState = {
   applyDraft: (policy: DraftPolicy) => void;
   /**
    * Unsaved edits restored from this browser. They are diffs against the
-   * freshly indexed baseline, never a stored chain state.
+   * baseline just read from the chain, never a stored chain state.
    */
   recovered: { savedAt: number; baseHash: string | null } | null;
   /** Hides the recovery notice while keeping the restored edits. */
   dismissRecovered: () => void;
-  /** The modifier exists on chain but the indexer has not seen it: the baseline is empty and unverified. */
-  unindexed: boolean;
   /** When the current unsaved edits were last written locally. */
   autosavedAt: number | null;
   /**
-   * Re-fetches the indexed state immediately before submission. A changed
+   * Re-reads the chain state immediately before submission. A changed
    * baseline is installed so React rebuilds the review plan, but never submitted
    * in the same click.
    */
   recheckBaseline: () => Promise<BaselineCheck>;
-  /** Prevents another proposal until the indexer observes the submitted state. */
-  markSubmitted: () => void;
+  /** Which Roles release the open modifier runs; null until read (or when it could not be). */
+  mastercopy: MastercopyStatus | null;
+  /** Unsafe patterns in permissions already on chain. Reported, never blocking. */
+  standingWarnings: string[];
+  /** Permissions whose stored condition uses the pre-4.1.5 encoding of fixed-size arrays. */
+  legacyPermissions: { roleId: string; permissionId: string; fixable: boolean }[];
+  /**
+   * Records a submission before its first signing prompt, so a page closed
+   * partway still knows these transactions may have gone out.
+   */
+  beginSubmission: (transactions: readonly { to: string; value: string; data: string }[]) => Promise<void>;
+  /** Records what went out. Until the chain shows it, resending those calls is blocked. */
+  markSubmitted: (result: SubmissionResult) => void;
+  /** Drops the record of a submission that sent nothing, or of interrupted ones the user has checked. */
+  clearSubmission: (which: "current" | "interrupted") => Promise<void>;
 };
 
 const idlePlan: Plan = {
@@ -148,8 +180,8 @@ export function usePolicy(): PolicyState {
     savedAt: number;
     baseHash: string | null;
   } | null>(null);
-  const [unindexed, setUnindexed] = useState(false);
   const [autosavedAt, setAutosavedAt] = useState<number | null>(null);
+  const [mastercopy, setMastercopy] = useState<MastercopyStatus | null>(null);
   // A submission clears the working copy; an in-flight debounce must not write
   // the submitted diff back, so the first manual edit re-enables autosave.
   const skipAutosave = useRef(false);
@@ -158,12 +190,31 @@ export function usePolicy(): PolicyState {
   // overwriting the policy they are now looking at.
   const loadToken = useRef(0);
   const scopeRef = useRef<Scope | null>(null);
-  const submittedBaseHash = useRef<string | null>(null);
-  const submittedAt = useRef(0);
+  // Submission records, mirrored in memory for browsers without storage. Keyed
+  // by the same storage key, so they are scoped to their modifier.
+  const submissions = useRef(new Map<string, { mark: SubmissionMark; persisted: boolean }>());
+  const activeSubmission = useRef<{ scope: Scope; key: string } | null>(null);
+
+  const forgetSubmission = useCallback(async (scope: Scope, id: string) => {
+    submissions.current.delete(formKeys.submitted(scope.chainId, scope.rolesMod, id));
+    await clearSubmissionMark(scope, id);
+  }, []);
+
+  /** Recorded submissions for `scope` from storage (any tab) and from this page. */
+  const submissionMarks = useCallback(async (scope: Scope): Promise<SubmissionMark[]> => {
+    const stored = new Map((await readSubmissionMarks(scope)).map((mark) => [mark.id, mark]));
+    const prefix = formKeys.submitted(scope.chainId, scope.rolesMod, "");
+    for (const [key, entry] of submissions.current) {
+      if (!key.startsWith(prefix) || stored.has(entry.mark.id)) continue;
+      // Stored once and gone now: another tab settled or cleared it.
+      if (entry.persisted) submissions.current.delete(key);
+      else stored.set(entry.mark.id, entry.mark);
+    }
+    return [...stored.values()];
+  }, []);
 
   const load = useCallback(async (next: Scope) => {
     const token = ++loadToken.current;
-    if (!samePolicyScope(scopeRef.current, next)) submittedBaseHash.current = null;
     scopeRef.current = next;
     skipAutosave.current = false;
     setRecovered(null);
@@ -171,14 +222,18 @@ export function usePolicy(): PolicyState {
     setStatus("loading");
     setError(null);
     setScope(next);
+    setMastercopy(null);
+    // Read alongside the policy; a failure only leaves the release unknown.
+    void readMastercopy(next.rolesMod, next.chainId)
+      .then((found) => {
+        if (token === loadToken.current) setMastercopy(found);
+      })
+      .catch(() => {});
 
     try {
-      const indexedMod = await browserRolesReader.read({chainId:next.chainId,address:next.rolesMod},{cache:"no-store"});
-      // A modifier deployed moments ago is on chain before the indexer sees it.
-      const mod = indexedMod ?? await readUnindexedModifier(next.rolesMod, next.chainId).catch(() => null);
-      if (!mod) throw new Error("No Roles modifier is indexed at this address.");
-      setUnindexed(!indexedMod);
+      const mod = await browserRolesReader.read({chainId:next.chainId,address:next.rolesMod});
       if (token !== loadToken.current) return;
+      if (!mod) throw new Error("No Roles v2 modifier was found at this address on this network.");
       assertModifierAddress(mod, next.rolesMod);
 
       const chainState: SdkState = { roles: mod.roles, allowances: mod.allowances };
@@ -190,24 +245,6 @@ export function usePolicy(): PolicyState {
       };
       const hash = await fingerprint(chainState, nextFacts);
       if (token !== loadToken.current) return;
-      if (
-        submittedBaseHash.current &&
-        hash !== submittedBaseHash.current
-      ) {
-        submittedBaseHash.current = null;
-      }
-
-      // A submission is remembered across reloads: until the indexer shows the
-      // resulting state, a diff rebuilt from this same baseline would send the
-      // calls that already went out a second time.
-      const mark = await readSubmissionMark(next.chainId, next.rolesMod);
-      if (token !== loadToken.current) return;
-      if (submissionBlocks(mark, hash)) {
-        submittedBaseHash.current = hash;
-        submittedAt.current = mark!.savedAt;
-      } else if (mark) {
-        void clearSubmissionMark(next.chainId, next.rolesMod);
-      }
 
       // Unsaved edits are restored as a diff against the snapshot just read,
       // not as a stored policy. They were saved automatically while editing and
@@ -280,15 +317,14 @@ export function usePolicy(): PolicyState {
 
   const recheckBaseline = useCallback(async (): Promise<BaselineCheck> => {
     const active = scopeRef.current;
-    if (!active || !current || !baseHash) {
-      throw new Error("The indexed policy baseline is not loaded.");
+    if (!active || !current || !baseHash || !draft) {
+      throw new Error("The policy baseline is not loaded.");
     }
 
-    // No-store mode avoids browser/CDN reuse. This source is
-    // indexer-backed, so after a submission we additionally require the
-    // fingerprint to advance before accepting another proposal.
-    const mod = await browserRolesReader.read({chainId:active.chainId,address:active.rolesMod},{cache:"no-store"});
-    if (!mod) throw new Error("The Roles modifier is not indexed yet.");
+    // Read again from the chain: the recent blocks always come straight from
+    // the RPC, so a change made since the review opened is seen here.
+    const mod = await browserRolesReader.read({chainId:active.chainId,address:active.rolesMod});
+    if (!mod) throw new Error("No Roles v2 modifier was found at this address on this network.");
     assertModifierAddress(mod, active.rolesMod);
     if (!samePolicyScope(scopeRef.current, active)) {
       throw new Error("The open modifier changed while its baseline was checked.");
@@ -304,16 +340,29 @@ export function usePolicy(): PolicyState {
       target: mod.target,
     };
     const hash = await fingerprint(chainState, nextFacts);
+
+    // Read at the last moment before signing, so a submission made in another
+    // tab or before a reload counts too. Each one is judged against the state
+    // just read: it blocks while the chain still shows its baseline or while
+    // the open draft would resend one of its calls.
+    const planned = await transactionDigests(diffTransactions(draft, chainState, active.rolesMod));
+    const blocking: SubmissionMark[] = [];
+    for (const mark of await submissionMarks(active)) {
+      const outstanding = await transactionDigests(diffTransactions(mark.policy, chainState, active.rolesMod));
+      const verdict = submissionVerdict(mark, { stateHash: hash, planned, outstanding });
+      if (verdict === "settled") void forgetSubmission(active, mark.id);
+      else if (verdict === "blocks") blocking.push(mark);
+    }
     if (!samePolicyScope(scopeRef.current, active)) {
       throw new Error("The open modifier changed while its baseline was checked.");
     }
-
-    if (submittedBaseHash.current === hash && Date.now() - submittedAt.current < SUBMISSION_BLOCK_MS) {
+    if (blocking.length) {
       return {
         fresh: false,
-        reason: "indexer-pending",
+        reason: blocking.some((mark) => mark.status === "sending") ? "outcome-unknown" : "pending",
         previousHash: baseHash,
         currentHash: hash,
+        until: Math.max(...blocking.map(blockedUntil)),
       };
     }
     if (hash !== baseHash) {
@@ -324,8 +373,6 @@ export function usePolicy(): PolicyState {
       setBaseHash(hash);
       setPristine(JSON.stringify(imported));
       setStatus("loaded");
-      submittedBaseHash.current = null;
-      void clearSubmissionMark(active.chainId, active.rolesMod);
       return {
         fresh: false,
         reason: "changed",
@@ -334,18 +381,62 @@ export function usePolicy(): PolicyState {
       };
     }
     return { fresh: true, baseHash: hash };
-  }, [baseHash, current]);
+  }, [baseHash, current, draft, forgetSubmission, submissionMarks]);
 
-  const markSubmitted = useCallback(() => {
-    submittedBaseHash.current = baseHash;
-    submittedAt.current = Date.now();
+  const beginSubmission = useCallback<PolicyState["beginSubmission"]>(async (transactions) => {
+    const active = scopeRef.current;
+    if (!active || !baseHash || !draft) throw new Error("The policy baseline is not loaded.");
+    const mark: SubmissionMark = {
+      id: crypto.randomUUID(),
+      baseHash,
+      status: "sending",
+      sent: await transactionDigests(transactions),
+      policy: draft,
+      savedAt: Date.now(),
+    };
+    const key = formKeys.submitted(active.chainId, active.rolesMod, mark.id);
+    const entry = { mark, persisted: false };
+    submissions.current.set(key, entry);
+    activeSubmission.current = { scope: active, key };
+    entry.persisted = await rememberSubmission(active, mark);
+  }, [baseHash, draft]);
+
+  const markSubmitted = useCallback<PolicyState["markSubmitted"]>((result) => {
     skipAutosave.current = true;
     setRecovered(null);
     setAutosavedAt(null);
     const active = scopeRef.current;
     if (active) void clearSavedForm(formKeys.policy(active.chainId, active.rolesMod));
-    if (active && baseHash) void rememberSubmission(active.chainId, active.rolesMod, baseHash);
-  }, [baseHash]);
+    const pending = activeSubmission.current;
+    activeSubmission.current = null;
+    const entry = pending ? submissions.current.get(pending.key) : undefined;
+    if (!pending || !entry) return;
+    // A partial sequential send reports only the calls that went out; the rest
+    // were never broadcast and may be sent again.
+    entry.mark = {
+      ...entry.mark,
+      status: statusAfter(result),
+      sent: entry.mark.sent.slice(0, sentCount(result, entry.mark.sent.length)),
+      savedAt: Date.now(),
+    };
+    void rememberSubmission(pending.scope, entry.mark).then((stored) => {
+      entry.persisted ||= stored;
+    });
+  }, []);
+
+  const clearSubmission = useCallback<PolicyState["clearSubmission"]>(async (which) => {
+    if (which === "current") {
+      const pending = activeSubmission.current;
+      activeSubmission.current = null;
+      const entry = pending ? submissions.current.get(pending.key) : undefined;
+      if (pending && entry) await forgetSubmission(pending.scope, entry.mark.id);
+      return;
+    }
+    const active = scopeRef.current;
+    if (!active) return;
+    const interrupted = (await submissionMarks(active)).filter((mark) => mark.status === "sending");
+    await Promise.all(interrupted.map((mark) => forgetSubmission(active, mark.id)));
+  }, [forgetSubmission, submissionMarks]);
 
   const baseline = useMemo(() => (pristine ? (JSON.parse(pristine) as DraftPolicy) : null), [pristine]);
   const dirty = useMemo(
@@ -398,7 +489,7 @@ export function usePolicy(): PolicyState {
   const plan = useMemo<Plan>(() => {
     if (!draft || !current || !scope) return idlePlan;
     const { state, issues } = toSdkState(draft);
-    return withUnwrappers(
+    const planned = withUnwrappers(
       buildPlan({
         rolesMod: scope.rolesMod,
         current,
@@ -409,7 +500,22 @@ export function usePolicy(): PolicyState {
       scope.chainId,
       draft.unwrappers,
     );
+    // Unsafe patterns block only what this plan would write.
+    const unsafe = plannedCallIssues(planned.calls, draft);
+    return unsafe.length ? { ...planned, issues: [...planned.issues, ...unsafe] } : planned;
   }, [draft, current, scope]);
+
+  const onChainWarnings = useMemo(() => standingWarnings(current), [current]);
+  const legacyPermissions = useMemo(
+    () =>
+      (draft?.roles ?? []).flatMap((role) =>
+        role.permissions.flatMap((permission) => {
+          const legacy = legacyEncoding(permission);
+          return legacy.found ? [{ roleId: role.id, permissionId: permission.id, fixable: legacy.fixable }] : [];
+        }),
+      ),
+    [draft],
+  );
 
   return {
     status,
@@ -429,10 +535,14 @@ export function usePolicy(): PolicyState {
     applyDraft,
     recovered,
     dismissRecovered,
-    unindexed,
     autosavedAt: dirty ? autosavedAt : null,
+    mastercopy,
+    standingWarnings: onChainWarnings,
+    legacyPermissions,
     recheckBaseline,
+    beginSubmission,
     markSubmitted,
+    clearSubmission,
   };
 }
 
@@ -456,9 +566,10 @@ export function useDiscoveredMods(
     void (async () => {
       setResult({ identity, mods: [], loading: true, error: null });
       try {
-        // The indexer can lag a fresh deployment, so also read the Safe's own modules.
+        // The official indexer lists modifiers on every chain when it answers;
+        // the Safe's own enabled modules cover its network either way.
         const [indexed, onChain] = await Promise.allSettled([browserRolesReader.discover(safeAddress), discoverOnChain(safeAddress, chainId)]);
-        if (indexed.status === "rejected" && onChain.status === "rejected") throw indexed.reason;
+        if (indexed.status === "rejected" && onChain.status === "rejected") throw onChain.reason;
         const mods = mergeMods(indexed.status === "fulfilled" ? indexed.value : [], onChain.status === "fulfilled" ? onChain.value : []);
         mods.sort((a,b)=>Number(b.chainId===chainId)-Number(a.chainId===chainId) || a.chainId-b.chainId);
         if (!cancelled) setResult({identity,mods,loading:false,error:null});
