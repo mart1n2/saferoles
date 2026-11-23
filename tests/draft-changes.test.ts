@@ -101,6 +101,7 @@ test("summary says what differs from the indexed policy", () => {
   };
   assert.deepEqual(summarizeChanges(base, draft), ["1 permission removed", "1 allowance added"]);
   assert.deepEqual(summarizeChanges(base, base), []);
+  assert.deepEqual(summarizeChanges(base, { ...base, unwrappers: ["multisend-callonly-150"] }), ["1 batch target enabled"]);
 });
 
 test("a blank, never-started permission does not make the role edited", () => {

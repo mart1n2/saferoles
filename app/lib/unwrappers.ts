@@ -8,9 +8,15 @@
  * that batch at all.
  *
  * Only the official adapters below can be enabled from here: the adapter decides
- * which calls get through, so it must never be a user-supplied address. All
- * addresses and selectors come from the official Zodiac Roles app and were
- * checked to have code on Ethereum and Base.
+ * which calls get through, so it must never be a user-supplied address. The 1.4.1
+ * MultiSend and Bundler3 entries match the official Zodiac Roles app; the 1.3.0
+ * and 1.5.0 MultiSend addresses come from @safe-global/safe-deployments. All were
+ * checked to have code on Base, and the adapter was checked to unwrap every
+ * MultiSend version listed (one batch encoding across versions).
+ *
+ * Which MultiSend a Safe can use does not depend on the Safe's version: it is a
+ * library the Safe delegatecalls. What matters is the address the role member
+ * actually sends batches to, so each one is a separate target.
  */
 import { createPublicClient, getAddress, http, pad, parseAbi, toHex } from "viem";
 import { Interface } from "ethers";
@@ -31,7 +37,16 @@ export type UnwrapTarget = {
   adapter: `0x${string}`;
   /** The batch contract on a chain, or null where there is no official deployment. */
   contract: (chainId: number) => `0x${string}` | null;
+  /** Shown under "Other MultiSend versions" rather than in the main list. */
+  secondary?: boolean;
 };
+
+const CALL_ONLY_EXPLANATION = "The call-only variant: inner calls can never be delegatecalls.";
+
+/** A MultiSend deployment that is not the 1.4.1 default most tools use. */
+function otherMultiSend(id: string, label: string, explanation: string, address: `0x${string}`): UnwrapTarget {
+  return { id, label, explanation, selector: MULTISEND_SELECTOR, adapter: MULTISEND_UNWRAPPER, contract: () => address, secondary: true };
+}
 
 /**
  * Bundler3 per chain, limited to the chains where the official MorphoBundler3Unwrapper
@@ -73,6 +88,12 @@ export const UNWRAP_TARGETS: readonly UnwrapTarget[] = [
     adapter: MORPHO_BUNDLER3_UNWRAPPER,
     contract: (chainId) => MORPHO_BUNDLER3[chainId] ?? null,
   },
+  otherMultiSend("multisend-150", "Safe MultiSend 1.5.0", "The MultiSend that ships with Safe 1.5.0. Enable it if your bot or tooling batches through this address.", "0x218543288004CD07832472D464648173c77D7eB7"),
+  otherMultiSend("multisend-callonly-150", "Safe MultiSendCallOnly 1.5.0", `${CALL_ONLY_EXPLANATION} Ships with Safe 1.5.0.`, "0xA83c336B20401Af773B6219BA5027174338D1836"),
+  otherMultiSend("multisend-130", "Safe MultiSend 1.3.0", "The MultiSend that ships with Safe 1.3.0, at its canonical address.", "0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761"),
+  otherMultiSend("multisend-callonly-130", "Safe MultiSendCallOnly 1.3.0", `${CALL_ONLY_EXPLANATION} Ships with Safe 1.3.0, at its canonical address.`, "0x40A2aCCbd92BCA938b02010E17A5b8929b49130D"),
+  otherMultiSend("multisend-130-eip155", "Safe MultiSend 1.3.0 (EIP-155)", "Safe 1.3.0's second (EIP-155) deployment. Most networks have both 1.3.0 deployments; enable the one your bot sends to.", "0x998739BFdAAdde7C933B942a68053933098f9EDa"),
+  otherMultiSend("multisend-callonly-130-eip155", "Safe MultiSendCallOnly 1.3.0 (EIP-155)", `${CALL_ONLY_EXPLANATION} Safe 1.3.0's second (EIP-155) deployment.`, "0xA1dabEF33b3B82c7814B6D82A79e50F4AC44102B"),
 ];
 
 export const unwrapTargetIds = UNWRAP_TARGETS.map((target) => target.id);

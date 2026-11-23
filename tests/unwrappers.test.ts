@@ -45,7 +45,25 @@ test("enabling plans an owner call to the modifier with the official adapter onl
   assert.equal(withUnwrappers(empty,rolesMod,1,undefined),empty);
   assert.equal(encodeUnwrapCall(unwrapCallFor("multisend-141",1)!).slice(0,10),i.getFunction("setTransactionUnwrapper")!.selector);
 });
+test("every Safe MultiSend version is a separate target using the official MultiSend adapter",async()=>{
+  const multiSends=UNWRAP_TARGETS.filter(t=>t.selector===MULTISEND_SELECTOR);
+  assert.deepEqual(multiSends.map(t=>t.id),[
+    "multisend-141","multisend-callonly-141","multisend-150","multisend-callonly-150",
+    "multisend-130","multisend-callonly-130","multisend-130-eip155","multisend-callonly-130-eip155",
+  ]);
+  assert.ok(multiSends.every(t=>t.adapter===MULTISEND_UNWRAPPER));
+  assert.equal(new Set(UNWRAP_TARGETS.map(t=>t.id)).size,UNWRAP_TARGETS.length);
+  assert.equal(new Set(multiSends.map(t=>t.contract(1)!.toLowerCase())).size,multiSends.length);
+  // The defaults most tools use stay in the main list.
+  assert.deepEqual(UNWRAP_TARGETS.filter(t=>!t.secondary).map(t=>t.id),["multisend-141","multisend-callonly-141","morpho-bundler3"]);
+  const call=unwrapCallFor("multisend-callonly-150",8453)!;
+  assert.equal(call.to,"0xA83c336B20401Af773B6219BA5027174338D1836");
+  const zero="0x0000000000000000000000000000000000000000";
+  const states=await readUnwrapperStates(8453,{unwrapperOf:async()=>zero,hasCode:async()=>true});
+  assert.equal(states["multisend-callonly-130-eip155"]!.status,"missing");
+});
 test("drafts only carry known batch targets",()=>{
+  assert.deepEqual(parseDraftPolicy({chainId:1,rolesMod,roles:[],allowances:[],unwrappers:["multisend-150"]},{chainId:1,rolesMod}).unwrappers,["multisend-150"]);
   const base={chainId:1,rolesMod,roles:[],allowances:[]};
   assert.deepEqual(parseDraftPolicy({...base,unwrappers:["multisend-141","multisend-141"]},{chainId:1,rolesMod}).unwrappers,["multisend-141"]);
   assert.equal(parseDraftPolicy(base,{chainId:1,rolesMod}).unwrappers,undefined);
