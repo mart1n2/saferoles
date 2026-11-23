@@ -150,5 +150,9 @@ export function summarizeChanges(baseline: DraftPolicy, draft: DraftPolicy): str
   if (allowancesAdded) lines.push(`${plural(allowancesAdded, "allowance")} added`);
   if (allowancesEdited) lines.push(`${plural(allowancesEdited, "allowance")} edited`);
   if (allowancesRemoved) lines.push(`${plural(allowancesRemoved, "allowance")} removed`);
+
+  // Batch targets are only ever added by a draft; the baseline is read from chain separately.
+  const batchTargets = draft.unwrappers?.length ?? 0;
+  if (batchTargets) lines.push(`${plural(batchTargets, "batch target")} enabled`);
   return lines;
 }

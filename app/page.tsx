@@ -671,8 +671,11 @@ export default function Home() {
                     </p>
                   </details>
                   {unwrapperStates.error && <p className="error-text" role="alert">{unwrapperStates.error}</p>}
-                  <div className="unwrap-list">
-                    {UNWRAP_TARGETS.map((target) => {
+                  {([false, true] as const).map((secondary) => {
+                    const targets = UNWRAP_TARGETS.filter((target) => Boolean(target.secondary) === secondary);
+                    const list = (
+                  <div className="unwrap-list" key={secondary ? "other" : "main"}>
+                    {targets.map((target) => {
                       const state = unwrapperStates.states?.[target.id];
                       const requested = Boolean(draft.unwrappers?.includes(target.id));
                       const statusLabel = !state ? "Checking…" : state.status === "enabled" ? "Enabled" : state.status === "legacy" ? "Old adapter in use" : state.status === "unavailable" ? "Not available on this network" : "Not enabled";
@@ -706,6 +709,21 @@ export default function Home() {
                       );
                     })}
                   </div>
+                    );
+                    if (!secondary) return list;
+                    // Open by default once one of these is in use or planned, so it is never hidden.
+                    const inUse = targets.some((target) => draft.unwrappers?.includes(target.id) || ["enabled", "legacy"].includes(unwrapperStates.states?.[target.id]?.status ?? ""));
+                    return (
+                      <details className="how-to unwrap-more" key="other" open={inUse}>
+                        <summary>Other MultiSend versions (Safe 1.3.0, 1.5.0)</summary>
+                        <p>
+                          Any Safe can batch through any MultiSend version. Enable the address your bot actually sends batches to;
+                          a batch sent to an address without an unwrapper is refused.
+                        </p>
+                        {list}
+                      </details>
+                    );
+                  })}
                 </section>
               )}
 

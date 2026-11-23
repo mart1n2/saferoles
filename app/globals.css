@@ -2611,6 +2611,8 @@ button:disabled, .button:disabled { cursor: not-allowed; opacity: .45; }
 
 /* Batching targets. */
 .unwrap-list { display: grid; gap: 12px; }
+.unwrap-more { margin: 12px 0 0; }
+.unwrap-more > p { margin: 6px 0 12px; color: var(--ink-2); }
 .unwrap-card { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px 18px; border: 1px solid var(--rule); border-radius: 12px; background: var(--paper); }
 .unwrap-card b { margin-right: 10px; }
 .unwrap-card p { margin: 6px 0; color: var(--ink-2); font-size: 14px; line-height: 1.55; }
