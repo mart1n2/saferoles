@@ -31,6 +31,7 @@
     "app",
     "tests",
     "scripts",
+    "examples",
     "vite.config.ts"
   ],
   "exclude": [
